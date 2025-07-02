@@ -16,7 +16,8 @@ func TestMCPServer_ProjectCommands(t *testing.T) {
 	memStorage := storage.NewMemoryStorage()
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
-	server := NewMCPServer(taskService, projectService)
+	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
+	server := NewMCPServer(taskService, projectService, contextRetriever)
 
 	// Test project creation
 	createParams := CreateProjectParams{
@@ -45,7 +46,8 @@ func TestMCPServer_TaskCommands(t *testing.T) {
 	memStorage := storage.NewMemoryStorage()
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
-	server := NewMCPServer(taskService, projectService)
+	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
+	server := NewMCPServer(taskService, projectService, contextRetriever)
 
 	// Create a project first
 	createProjectParams := CreateProjectParams{
@@ -102,7 +104,8 @@ func TestMCPServer_UnknownCommand(t *testing.T) {
 	memStorage := storage.NewMemoryStorage()
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
-	server := NewMCPServer(taskService, projectService)
+	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
+	server := NewMCPServer(taskService, projectService, contextRetriever)
 
 	// Test unknown command
 	result, err := server.HandleCommand("compass.unknown.command", nil)

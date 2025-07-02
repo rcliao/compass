@@ -102,9 +102,20 @@ go test -cover ./...
 - `compass.task.get` - Get a specific task
 - `compass.task.delete` - Delete a task
 
-## Next Steps
+### Context Commands
+- `compass.context.get` - Get full task context with dependencies and related tasks
+- `compass.context.search` - Hybrid search across title, description, files, and dependencies
+- `compass.context.check` - Check if task has sufficient context information
 
-This foundation provides:
+### Intelligent Queries
+- `compass.next` - Get next recommended task based on dependencies and priority
+- `compass.blockers` - Get all blocked tasks in current project
+
+## Phase 2 Complete: Context System
+
+### ✅ Completed Features
+
+**Phase 1: Foundation**
 - ✅ Complete Go module setup
 - ✅ Core domain models
 - ✅ Memory and file storage
@@ -112,11 +123,20 @@ This foundation provides:
 - ✅ CLI interface
 - ✅ Unit and integration tests
 
-Ready for Phase 2 implementation:
-- Context header generation
-- Hybrid search functionality
+**Phase 2: Context System**
+- ✅ Contextual header generation for tasks
+- ✅ Hybrid search (keyword, header, structural)
+- ✅ Context retrieval with task relationships
+- ✅ Staleness detection and verification
+- ✅ Context sufficiency checking
+- ✅ Intelligent task recommendations
+- ✅ Next task suggestions with scoring
+
+### Ready for Phase 3
 - Planning session management
-- Discovery and decision tracking
+- Discovery tracking and insights
+- Decision recording and rationale
+- Project summary generation
 
 ## License
 

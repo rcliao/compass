@@ -1,0 +1,26 @@
+[
+  {
+    "id": "abdaa1f3-57f5-4aa9-8dd2-25cdaedd9150",
+    "projectId": "0d05c2f8-509f-46a4-9768-3d8fb9f4b594",
+    "card": {
+      "title": "setup",
+      "description": "initial setup",
+      "status": "planned",
+      "createdAt": "2025-07-02T15:07:49.648787-07:00",
+      "updatedAt": "2025-07-02T15:07:49.648787-07:00"
+    },
+    "context": {
+      "files": [],
+      "dependencies": [],
+      "assumptions": [],
+      "blockers": [],
+      "decisions": [],
+      "lastVerified": "2025-07-02T15:07:49.648787-07:00",
+      "confidence": "medium"
+    },
+    "criteria": {
+      "acceptance": [],
+      "verification": []
+    }
+  }
+]

@@ -10,14 +10,16 @@ import (
 )
 
 type MCPServer struct {
-	taskService    *service.TaskService
-	projectService *service.ProjectService
+	taskService      *service.TaskService
+	projectService   *service.ProjectService
+	contextRetriever *service.ContextRetriever
 }
 
-func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService) *MCPServer {
+func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever) *MCPServer {
 	return &MCPServer{
-		taskService:    taskService,
-		projectService: projectService,
+		taskService:      taskService,
+		projectService:   projectService,
+		contextRetriever: contextRetriever,
 	}
 }
 
@@ -61,6 +63,20 @@ func (s *MCPServer) HandleCommand(method string, params json.RawMessage) (interf
 		return s.handleTaskGet(params)
 	case "compass.task.delete":
 		return s.handleTaskDelete(params)
+		
+	// Context commands
+	case "compass.context.get":
+		return s.handleContextGet(params)
+	case "compass.context.search":
+		return s.handleContextSearch(params)
+	case "compass.context.check":
+		return s.handleContextCheck(params)
+		
+	// Intelligent queries
+	case "compass.next":
+		return s.handleGetNextTask(params)
+	case "compass.blockers":
+		return s.handleGetBlockers(params)
 		
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
@@ -214,4 +230,120 @@ func (s *MCPServer) handleTaskDelete(params json.RawMessage) (interface{}, error
 	}
 	
 	return map[string]string{"status": "success"}, nil
+}
+
+// Context handlers
+type GetContextParams struct {
+	TaskID string `json:"taskId"`
+}
+
+func (s *MCPServer) handleContextGet(params json.RawMessage) (interface{}, error) {
+	var p GetContextParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.contextRetriever.GetTaskContext(p.TaskID)
+}
+
+type SearchContextParams struct {
+	Query     string  `json:"query"`
+	ProjectID *string `json:"projectId,omitempty"`
+	Limit     int     `json:"limit,omitempty"`
+	Offset    int     `json:"offset,omitempty"`
+}
+
+func (s *MCPServer) handleContextSearch(params json.RawMessage) (interface{}, error) {
+	var p SearchContextParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	opts := domain.SearchOptions{
+		ProjectID: p.ProjectID,
+		Limit:     p.Limit,
+		Offset:    p.Offset,
+	}
+	
+	if opts.Limit == 0 {
+		opts.Limit = 10
+	}
+	
+	return s.contextRetriever.Search(p.Query, opts)
+}
+
+type CheckContextParams struct {
+	TaskID string `json:"taskId"`
+}
+
+func (s *MCPServer) handleContextCheck(params json.RawMessage) (interface{}, error) {
+	var p CheckContextParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.contextRetriever.CheckSufficiency(p.TaskID)
+}
+
+type GetNextTaskParams struct {
+	ProjectID string   `json:"projectId,omitempty"`
+	Exclude   []string `json:"exclude,omitempty"`
+}
+
+func (s *MCPServer) handleGetNextTask(params json.RawMessage) (interface{}, error) {
+	var p GetNextTaskParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	criteria := domain.NextTaskCriteria{
+		ProjectID: projectID,
+		Exclude:   p.Exclude,
+	}
+	
+	return s.contextRetriever.GetNextTask(criteria)
+}
+
+type GetBlockersParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handleGetBlockers(params json.RawMessage) (interface{}, error) {
+	var p GetBlockersParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	// Get all blocked tasks
+	status := domain.StatusBlocked
+	filter := domain.TaskFilter{
+		ProjectID: &projectID,
+		Status:    &status,
+	}
+	
+	return s.taskService.List(filter)
 }

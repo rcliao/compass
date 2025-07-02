@@ -29,9 +29,10 @@ func main() {
 	// Initialize services
 	taskService := service.NewTaskService(fileStorage)
 	projectService := service.NewProjectService(fileStorage)
+	contextRetriever := service.NewContextRetriever(fileStorage, fileStorage)
 
 	// Initialize MCP server
-	mcpServer := mcp.NewMCPServer(taskService, projectService)
+	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever)
 
 	fmt.Println("Compass MCP Server started")
 	fmt.Println("Type 'help' for available commands or 'quit' to exit")
@@ -81,9 +82,22 @@ func printHelp() {
 	fmt.Println("    compass.task.update          - Update a task")
 	fmt.Println("    compass.task.delete          - Delete a task")
 	fmt.Println()
+	fmt.Println("  Context commands:")
+	fmt.Println("    compass.context.get          - Get full context for a task")
+	fmt.Println("    compass.context.search       - Search tasks by query")
+	fmt.Println("    compass.context.check        - Check context sufficiency")
+	fmt.Println()
+	fmt.Println("  Intelligent queries:")
+	fmt.Println("    compass.next                 - Get next recommended task")
+	fmt.Println("    compass.blockers             - Get all blocked tasks")
+	fmt.Println()
 	fmt.Println("Example usage:")
 	fmt.Println("  compass.project.create {\"name\":\"My Project\",\"description\":\"A test project\",\"goal\":\"Learn Compass\"}")
 	fmt.Println("  compass.task.create {\"projectId\":\"<project-id>\",\"title\":\"Setup\",\"description\":\"Initial setup\"}")
+	fmt.Println("  compass.context.search {\"query\":\"authentication\",\"limit\":5}")
+	fmt.Println("  compass.next {}")
+	fmt.Println("  compass.context.get {\"taskId\":\"<task-id>\"}")
+
 }
 
 func handleCommand(server *mcp.MCPServer, input string) {
