@@ -17,7 +17,9 @@ func TestMCPServer_ProjectCommands(t *testing.T) {
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
 	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
-	server := NewMCPServer(taskService, projectService, contextRetriever)
+	planningService := service.NewPlanningService(memStorage, taskService, projectService)
+	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
+	server := NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService)
 
 	// Test project creation
 	createParams := CreateProjectParams{
@@ -47,7 +49,9 @@ func TestMCPServer_TaskCommands(t *testing.T) {
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
 	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
-	server := NewMCPServer(taskService, projectService, contextRetriever)
+	planningService := service.NewPlanningService(memStorage, taskService, projectService)
+	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
+	server := NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService)
 
 	// Create a project first
 	createProjectParams := CreateProjectParams{
@@ -105,7 +109,9 @@ func TestMCPServer_UnknownCommand(t *testing.T) {
 	taskService := service.NewTaskService(memStorage)
 	projectService := service.NewProjectService(memStorage)
 	contextRetriever := service.NewContextRetriever(memStorage, memStorage)
-	server := NewMCPServer(taskService, projectService, contextRetriever)
+	planningService := service.NewPlanningService(memStorage, taskService, projectService)
+	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
+	server := NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService)
 
 	// Test unknown command
 	result, err := server.HandleCommand("compass.unknown.command", nil)

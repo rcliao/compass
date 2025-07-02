@@ -10,16 +10,20 @@ import (
 )
 
 type MCPServer struct {
-	taskService      *service.TaskService
-	projectService   *service.ProjectService
-	contextRetriever *service.ContextRetriever
+	taskService       *service.TaskService
+	projectService    *service.ProjectService
+	contextRetriever  *service.ContextRetriever
+	planningService   *service.PlanningService
+	summaryService    *service.ProjectSummaryService
 }
 
-func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever) *MCPServer {
+func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever, planningService *service.PlanningService, summaryService *service.ProjectSummaryService) *MCPServer {
 	return &MCPServer{
 		taskService:      taskService,
 		projectService:   projectService,
 		contextRetriever: contextRetriever,
+		planningService:  planningService,
+		summaryService:   summaryService,
 	}
 }
 
@@ -77,6 +81,30 @@ func (s *MCPServer) HandleCommand(method string, params json.RawMessage) (interf
 		return s.handleGetNextTask(params)
 	case "compass.blockers":
 		return s.handleGetBlockers(params)
+		
+	// Planning commands
+	case "compass.planning.start":
+		return s.handlePlanningStart(params)
+	case "compass.planning.list":
+		return s.handlePlanningList(params)
+	case "compass.planning.get":
+		return s.handlePlanningGet(params)
+	case "compass.planning.complete":
+		return s.handlePlanningComplete(params)
+	case "compass.planning.abort":
+		return s.handlePlanningAbort(params)
+	case "compass.discovery.add":
+		return s.handleDiscoveryAdd(params)
+	case "compass.discovery.list":
+		return s.handleDiscoveryList(params)
+	case "compass.decision.record":
+		return s.handleDecisionRecord(params)
+	case "compass.decision.list":
+		return s.handleDecisionList(params)
+		
+	// Summary commands
+	case "compass.project.summary":
+		return s.handleProjectSummary(params)
 		
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
@@ -346,4 +374,224 @@ func (s *MCPServer) handleGetBlockers(params json.RawMessage) (interface{}, erro
 	}
 	
 	return s.taskService.List(filter)
+}
+
+// Planning handlers
+type StartPlanningParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+	Name      string `json:"name"`
+}
+
+func (s *MCPServer) handlePlanningStart(params json.RawMessage) (interface{}, error) {
+	var p StartPlanningParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.StartPlanningSession(projectID, p.Name)
+}
+
+type ListPlanningParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handlePlanningList(params json.RawMessage) (interface{}, error) {
+	var p ListPlanningParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.ListPlanningSessions(projectID)
+}
+
+type GetPlanningParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handlePlanningGet(params json.RawMessage) (interface{}, error) {
+	var p GetPlanningParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.planningService.GetPlanningSession(p.ID)
+}
+
+type CompletePlanningParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handlePlanningComplete(params json.RawMessage) (interface{}, error) {
+	var p CompletePlanningParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.planningService.CompletePlanningSession(p.ID)
+}
+
+type AbortPlanningParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handlePlanningAbort(params json.RawMessage) (interface{}, error) {
+	var p AbortPlanningParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.planningService.AbortPlanningSession(p.ID)
+}
+
+type AddDiscoveryParams struct {
+	ProjectID        string                  `json:"projectId,omitempty"`
+	Insight          string                  `json:"insight"`
+	Impact           domain.Impact           `json:"impact"`
+	Source           domain.DiscoverySource  `json:"source"`
+	AffectedTaskIDs  []string               `json:"affectedTaskIds,omitempty"`
+}
+
+func (s *MCPServer) handleDiscoveryAdd(params json.RawMessage) (interface{}, error) {
+	var p AddDiscoveryParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.RecordDiscovery(projectID, p.Insight, p.Impact, p.Source, p.AffectedTaskIDs)
+}
+
+type ListDiscoveryParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handleDiscoveryList(params json.RawMessage) (interface{}, error) {
+	var p ListDiscoveryParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.ListDiscoveries(projectID)
+}
+
+type RecordDecisionParams struct {
+	ProjectID        string   `json:"projectId,omitempty"`
+	Question         string   `json:"question"`
+	Choice           string   `json:"choice"`
+	Rationale        string   `json:"rationale"`
+	Alternatives     []string `json:"alternatives,omitempty"`
+	Reversible       bool     `json:"reversible"`
+	AffectedTaskIDs  []string `json:"affectedTaskIds,omitempty"`
+}
+
+func (s *MCPServer) handleDecisionRecord(params json.RawMessage) (interface{}, error) {
+	var p RecordDecisionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.RecordDecision(projectID, p.Question, p.Choice, p.Rationale, p.Alternatives, p.Reversible, p.AffectedTaskIDs)
+}
+
+type ListDecisionParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handleDecisionList(params json.RawMessage) (interface{}, error) {
+	var p ListDecisionParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.planningService.ListDecisions(projectID)
+}
+
+type ProjectSummaryParams struct {
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handleProjectSummary(params json.RawMessage) (interface{}, error) {
+	var p ProjectSummaryParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	return s.summaryService.GenerateProjectSummary(projectID)
 }

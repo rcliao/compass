@@ -13,6 +13,7 @@ type MemoryStorage struct {
 	projects     map[string]*domain.Project
 	discoveries  map[string]*domain.Discovery
 	decisions    map[string]*domain.Decision
+	sessions     map[string]*domain.PlanningSession
 	currentProject *string
 }
 
@@ -22,6 +23,7 @@ func NewMemoryStorage() *MemoryStorage {
 		projects:    make(map[string]*domain.Project),
 		discoveries: make(map[string]*domain.Discovery),
 		decisions:   make(map[string]*domain.Decision),
+		sessions:    make(map[string]*domain.PlanningSession),
 	}
 }
 
@@ -192,4 +194,94 @@ func (ms *MemoryStorage) CreateDecision(decision *domain.Decision) error {
 	
 	ms.decisions[decision.ID] = decision
 	return nil
+}
+
+// Planning Session Implementation
+func (ms *MemoryStorage) CreatePlanningSession(session *domain.PlanningSession) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	
+	if _, exists := ms.sessions[session.ID]; exists {
+		return fmt.Errorf("planning session with ID %s already exists", session.ID)
+	}
+	
+	ms.sessions[session.ID] = session
+	return nil
+}
+
+func (ms *MemoryStorage) GetPlanningSession(id string) (*domain.PlanningSession, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	session, exists := ms.sessions[id]
+	if !exists {
+		return nil, fmt.Errorf("planning session with ID %s not found", id)
+	}
+	
+	return session, nil
+}
+
+func (ms *MemoryStorage) ListPlanningSessions(projectID string) ([]*domain.PlanningSession, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	var result []*domain.PlanningSession
+	for _, session := range ms.sessions {
+		if session.ProjectID == projectID {
+			result = append(result, session)
+		}
+	}
+	
+	return result, nil
+}
+
+func (ms *MemoryStorage) UpdatePlanningSession(id string, updates map[string]interface{}) (*domain.PlanningSession, error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	
+	session, exists := ms.sessions[id]
+	if !exists {
+		return nil, fmt.Errorf("planning session with ID %s not found", id)
+	}
+	
+	// Create a copy and apply updates
+	updatedSession := *session
+	
+	if status, ok := updates["status"].(domain.PlanningSessionStatus); ok {
+		updatedSession.Status = status
+	}
+	if tasks, ok := updates["tasks"].([]string); ok {
+		updatedSession.Tasks = tasks
+	}
+	
+	ms.sessions[id] = &updatedSession
+	return &updatedSession, nil
+}
+
+func (ms *MemoryStorage) ListDiscoveries(projectID string) ([]*domain.Discovery, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	var result []*domain.Discovery
+	for _, discovery := range ms.discoveries {
+		if discovery.ProjectID == projectID {
+			result = append(result, discovery)
+		}
+	}
+	
+	return result, nil
+}
+
+func (ms *MemoryStorage) ListDecisions(projectID string) ([]*domain.Decision, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	var result []*domain.Decision
+	for _, decision := range ms.decisions {
+		if decision.ProjectID == projectID {
+			result = append(result, decision)
+		}
+	}
+	
+	return result, nil
 }
