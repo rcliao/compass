@@ -6,6 +6,23 @@ A Context-Oriented Memory system for Planning and Software Systems, implemented 
 
 Compass is designed to bridge the gap between AI-assisted planning and implementation by serving as a persistent context keeper that helps AI coding agents maintain project understanding across sessions.
 
+### Key Concepts
+
+- **Dumb Storage, Smart Retrieval**: Focus on intelligent ways to find and connect information rather than complex storage
+- **Context Sufficiency**: Ensure tasks have all necessary information before work begins
+- **Agent-Agnostic**: Works with any AI coding assistant that supports MCP
+- **Zero Dependencies**: Core operations require no external services or databases
+
+### Why Compass?
+
+Traditional task management tools lack the context awareness needed for AI-assisted development. Compass solves this by:
+
+1. **Maintaining Context**: Tasks include file references, dependencies, and acceptance criteria
+2. **Tracking Discoveries**: Insights found during development automatically update related tasks
+3. **Recording Decisions**: Technical choices are documented with rationale and impact
+4. **Intelligent Recommendations**: Suggests next tasks based on dependencies and project state
+5. **Planning Sessions**: Structured approach to project planning with full traceability
+
 ## Features
 
 - **File-based Storage**: Persistent storage using `.compass/` directory structure
@@ -27,17 +44,181 @@ go build -o bin/compass cmd/compass/main.go
 ./bin/compass
 ```
 
+### MCP Integration
+
+#### Claude Code
+
+Add to your Claude Code configuration file (`~/.config/claude-code/mcp_servers.json`):
+
+```json
+{
+  "mcpServers": {
+    "compass": {
+      "command": "/path/to/your/compass/bin/compass",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to your Cursor MCP settings (`~/.cursor/mcp_servers.json`):
+
+```json
+{
+  "mcpServers": {
+    "compass": {
+      "command": "/path/to/your/compass/bin/compass",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+#### Usage in AI Assistants
+
+Once configured, you can use Compass commands directly in your AI assistant:
+
+```
+# In Claude Code or Cursor chat
+Can you create a new project for my web app?
+> Uses: compass.project.create
+
+What's the next task I should work on?
+> Uses: compass.next
+
+Search for authentication-related tasks
+> Uses: compass.context.search
+```
+
 ### Basic Usage
 
 ```bash
 # Create a project
 compass.project.create {"name":"My Project","description":"A test project","goal":"Learn Compass"}
 
+# Set as current project (many commands use current project by default)
+compass.project.set_current {"id":"<project-id>"}
+
 # Create a task
 compass.task.create {"projectId":"<project-id>","title":"Setup","description":"Initial setup"}
 
 # List tasks
 compass.task.list {"projectId":"<project-id>"}
+```
+
+### Context System Usage
+
+```bash
+# Search for tasks using hybrid search
+compass.context.search {"query":"authentication","limit":5}
+
+# Get full context for a task including dependencies and related tasks
+compass.context.get {"taskId":"<task-id>"}
+
+# Check if a task has sufficient context to begin work
+compass.context.check {"taskId":"<task-id>"}
+# Returns: {"taskId":"...","sufficient":true/false,"missing":[...],"stale":[...]}
+
+# Get next recommended task based on dependencies and priority
+compass.next {}
+# Returns the best task to work on next
+
+# Get all blocked tasks
+compass.blockers {}
+```
+
+### Planning Session Usage
+
+```bash
+# Start a planning session
+compass.planning.start {"name":"Sprint Planning Week 1"}
+
+# List all planning sessions
+compass.planning.list {}
+
+# Complete a planning session
+compass.planning.complete {"id":"<session-id>"}
+```
+
+### Discovery and Decision Tracking
+
+```bash
+# Record a discovery during development
+compass.discovery.add {
+  "insight":"Users prefer OAuth login over custom authentication",
+  "impact":"high",
+  "source":"research",
+  "affectedTaskIds":["<task-id-1>","<task-id-2>"]
+}
+
+# List all discoveries
+compass.discovery.list {}
+
+# Record a technical decision
+compass.decision.record {
+  "question":"Which database should we use?",
+  "choice":"PostgreSQL",
+  "rationale":"Better JSON support and proven scalability",
+  "alternatives":["MySQL","MongoDB"],
+  "reversible":true,
+  "affectedTaskIds":["<task-id>"]
+}
+
+# List all decisions
+compass.decision.list {}
+```
+
+### Project Intelligence
+
+```bash
+# Generate comprehensive project summary with analytics
+compass.project.summary {}
+# Returns:
+# - Task statistics by status and confidence
+# - Recent discoveries and decisions
+# - Velocity trends (improving/stable/declining)
+# - Context health score (excellent/good/fair/poor)
+# - Intelligent recommendations for next actions
+```
+
+### Advanced Task Management
+
+```bash
+# Create a task with full context
+compass.task.create {
+  "projectId":"<project-id>",
+  "title":"Implement user authentication",
+  "description":"Add JWT-based authentication to the API",
+  "files":["auth.go","middleware.go"],
+  "dependencies":["<setup-task-id>"],
+  "acceptance":[
+    "Users can register with email/password",
+    "JWT tokens are properly validated",
+    "Protected endpoints require authentication"
+  ]
+}
+
+# Update task status
+compass.task.update {
+  "id":"<task-id>",
+  "updates":{
+    "status":"in-progress",
+    "confidence":"high"
+  }
+}
+
+# Mark task as blocked
+compass.task.update {
+  "id":"<task-id>",
+  "updates":{
+    "status":"blocked",
+    "blockers":["Waiting for API design approval"]
+  }
+}
 ```
 
 ## Architecture
@@ -110,6 +291,83 @@ go test -cover ./...
 ### Intelligent Queries
 - `compass.next` - Get next recommended task based on dependencies and priority
 - `compass.blockers` - Get all blocked tasks in current project
+
+### Planning Commands
+- `compass.planning.start` - Start a new planning session
+- `compass.planning.list` - List all planning sessions
+- `compass.planning.get` - Get planning session details
+- `compass.planning.complete` - Complete a planning session
+- `compass.planning.abort` - Abort a planning session
+- `compass.discovery.add` - Record a new discovery
+- `compass.discovery.list` - List all discoveries
+- `compass.decision.record` - Record a decision
+- `compass.decision.list` - List all decisions
+- `compass.project.summary` - Generate project summary with analytics
+
+## Example Workflow
+
+Here's a typical workflow showing how all features work together:
+
+```bash
+# 1. Create and setup a project
+compass.project.create {"name":"E-commerce API","description":"RESTful API for online store","goal":"Build scalable e-commerce backend"}
+compass.project.set_current {"id":"<project-id>"}
+
+# 2. Start a planning session
+compass.planning.start {"name":"Initial Architecture Planning"}
+
+# 3. Create initial tasks during planning
+compass.task.create {
+  "title":"Design API architecture",
+  "description":"Define RESTful endpoints and data models",
+  "acceptance":["OpenAPI spec created","Data models documented"]
+}
+
+compass.task.create {
+  "title":"Setup database",
+  "description":"Configure PostgreSQL with migrations",
+  "files":["database.go","migrations/"],
+  "acceptance":["Database connected","Initial migrations created"]
+}
+
+# 4. Record a discovery during research
+compass.discovery.add {
+  "insight":"Stripe API requires webhook endpoints for payment confirmations",
+  "impact":"high",
+  "source":"research",
+  "affectedTaskIds":["<api-design-task-id>"]
+}
+
+# 5. Make and record a technical decision
+compass.decision.record {
+  "question":"Which payment processor to use?",
+  "choice":"Stripe",
+  "rationale":"Best documentation and developer experience",
+  "alternatives":["PayPal","Square"],
+  "reversible":true,
+  "affectedTaskIds":["<api-design-task-id>"]
+}
+
+# 6. Search for related tasks
+compass.context.search {"query":"payment","limit":5}
+
+# 7. Get next recommended task
+compass.next {}
+
+# 8. Check task context before starting work
+compass.context.check {"taskId":"<task-id>"}
+
+# 9. View project progress and insights
+compass.project.summary {}
+# Returns comprehensive analytics including:
+# - Task completion velocity
+# - Context health score
+# - Recent decisions and discoveries
+# - Actionable recommendations
+
+# 10. Complete the planning session
+compass.planning.complete {"id":"<session-id>"}
+```
 
 ## Phase 2 Complete: Context System
 
