@@ -14,6 +14,9 @@ type MemoryStorage struct {
 	discoveries  map[string]*domain.Discovery
 	decisions    map[string]*domain.Decision
 	sessions     map[string]*domain.PlanningSession
+	processes    map[string]*domain.Process
+	processGroups map[string]*domain.ProcessGroup
+	processLogs  map[string][]*domain.ProcessLog
 	currentProject *string
 }
 
@@ -24,6 +27,9 @@ func NewMemoryStorage() *MemoryStorage {
 		discoveries: make(map[string]*domain.Discovery),
 		decisions:   make(map[string]*domain.Decision),
 		sessions:    make(map[string]*domain.PlanningSession),
+		processes:   make(map[string]*domain.Process),
+		processGroups: make(map[string]*domain.ProcessGroup),
+		processLogs: make(map[string][]*domain.ProcessLog),
 	}
 }
 
@@ -284,4 +290,99 @@ func (ms *MemoryStorage) ListDecisions(projectID string) ([]*domain.Decision, er
 	}
 	
 	return result, nil
+}
+
+// Process Storage Implementation
+func (ms *MemoryStorage) SaveProcess(projectID string, process *domain.Process) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	
+	ms.processes[process.ID] = process
+	return nil
+}
+
+func (ms *MemoryStorage) GetProcess(processID string) (*domain.Process, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	process, exists := ms.processes[processID]
+	if !exists {
+		return nil, fmt.Errorf("process with ID %s not found", processID)
+	}
+	
+	return process, nil
+}
+
+func (ms *MemoryStorage) ListProcesses(filter domain.ProcessFilter) ([]*domain.Process, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	var result []*domain.Process
+	for _, process := range ms.processes {
+		if filter.ProjectID != nil && process.ProjectID != *filter.ProjectID {
+			continue
+		}
+		if filter.Status != nil && process.Status != *filter.Status {
+			continue
+		}
+		if filter.Type != nil && process.Type != *filter.Type {
+			continue
+		}
+		result = append(result, process)
+	}
+	
+	return result, nil
+}
+
+func (ms *MemoryStorage) SaveProcessGroup(projectID string, group *domain.ProcessGroup) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	
+	ms.processGroups[group.ID] = group
+	return nil
+}
+
+func (ms *MemoryStorage) GetProcessGroup(groupID string) (*domain.ProcessGroup, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	group, exists := ms.processGroups[groupID]
+	if !exists {
+		return nil, fmt.Errorf("process group with ID %s not found", groupID)
+	}
+	
+	return group, nil
+}
+
+func (ms *MemoryStorage) SaveProcessLogs(logs []*domain.ProcessLog) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	
+	for _, log := range logs {
+		ms.processLogs[log.ProcessID] = append(ms.processLogs[log.ProcessID], log)
+	}
+	
+	return nil
+}
+
+func (ms *MemoryStorage) GetProcessLogs(processID string, limit int) ([]*domain.ProcessLog, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	
+	logs, exists := ms.processLogs[processID]
+	if !exists {
+		return []*domain.ProcessLog{}, nil
+	}
+	
+	// Return last N logs
+	if limit <= 0 || limit > len(logs) {
+		return logs, nil
+	}
+	
+	start := len(logs) - limit
+	if start < 0 {
+		start = 0
+	}
+	
+	return logs[start:], nil
 }

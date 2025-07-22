@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/rcliao/compass/internal/domain"
 	"github.com/rcliao/compass/internal/service"
@@ -15,15 +16,17 @@ type MCPServer struct {
 	contextRetriever  *service.ContextRetriever
 	planningService   *service.PlanningService
 	summaryService    *service.ProjectSummaryService
+	processService    *service.ProcessService
 }
 
-func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever, planningService *service.PlanningService, summaryService *service.ProjectSummaryService) *MCPServer {
+func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever, planningService *service.PlanningService, summaryService *service.ProjectSummaryService, processService *service.ProcessService) *MCPServer {
 	return &MCPServer{
 		taskService:      taskService,
 		projectService:   projectService,
 		contextRetriever: contextRetriever,
 		planningService:  planningService,
 		summaryService:   summaryService,
+		processService:   processService,
 	}
 }
 
@@ -106,6 +109,52 @@ func (s *MCPServer) HandleCommand(method string, params json.RawMessage) (interf
 	case "compass.project.summary":
 		return s.handleProjectSummary(params)
 		
+	// Process commands
+	case "compass.process.create":
+		return s.handleProcessCreate(params)
+	case "compass.process.start":
+		return s.handleProcessStart(params)
+	case "compass.process.stop":
+		return s.handleProcessStop(params)
+	case "compass.process.list":
+		return s.handleProcessList(params)
+	case "compass.process.get":
+		return s.handleProcessGet(params)
+	case "compass.process.logs":
+		return s.handleProcessLogs(params)
+	case "compass.process.status":
+		return s.handleProcessStatus(params)
+	case "compass.process.update":
+		return s.handleProcessUpdate(params)
+	case "compass.process.group.create":
+		return s.handleProcessGroupCreate(params)
+	case "compass.process.group.start":
+		return s.handleProcessGroupStart(params)
+	case "compass.process.group.stop":
+		return s.handleProcessGroupStop(params)
+		
+	// TODO commands
+	case "compass.todo.create":
+		return s.handleTodoCreate(params)
+	case "compass.todo.complete":
+		return s.handleTodoComplete(params)
+	case "compass.todo.reopen":
+		return s.handleTodoReopen(params)
+	case "compass.todo.list":
+		return s.handleTodoList(params)
+	case "compass.todo.overdue":
+		return s.handleTodoOverdue(params)
+	case "compass.todo.priority":
+		return s.handleTodoUpdatePriority(params)
+	case "compass.todo.due":
+		return s.handleTodoSetDue(params)
+	case "compass.todo.label.add":
+		return s.handleTodoAddLabel(params)
+	case "compass.todo.label.remove":
+		return s.handleTodoRemoveLabel(params)
+	case "compass.todo.progress":
+		return s.handleTodoUpdateProgress(params)
+		
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
@@ -133,11 +182,24 @@ func (s *MCPServer) handleProjectCreate(params json.RawMessage) (interface{}, er
 }
 
 func (s *MCPServer) handleProjectList() (interface{}, error) {
-	return s.projectService.List()
+	projects, err := s.projectService.List()
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return markdown formatted string
+	return FormatProjectsAsMarkdown(projects), nil
 }
 
 func (s *MCPServer) handleProjectCurrent() (interface{}, error) {
-	return s.projectService.GetCurrent()
+	project, err := s.projectService.GetCurrent()
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return markdown formatted string for single project
+	return fmt.Sprintf("## 📍 Current Project: %s\n\n**ID:** `%s`\n**Description:** %s\n**Goal:** %s", 
+		project.Name, project.ID[:8], project.Description, project.Goal), nil
 }
 
 type SetCurrentProjectParams struct {
@@ -594,4 +656,597 @@ func (s *MCPServer) handleProjectSummary(params json.RawMessage) (interface{}, e
 	}
 	
 	return s.summaryService.GenerateProjectSummary(projectID)
+}
+
+// Process handlers
+type CreateProcessParams struct {
+	ProjectID   string            `json:"projectId,omitempty"`
+	Name        string            `json:"name"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args,omitempty"`
+	WorkingDir  string            `json:"workingDir,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+	Type        domain.ProcessType `json:"type,omitempty"`
+	Port        int               `json:"port,omitempty"`
+}
+
+func (s *MCPServer) handleProcessCreate(params json.RawMessage) (interface{}, error) {
+	var p CreateProcessParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	process := domain.NewProcess(projectID, p.Name, p.Command, p.Args)
+	
+	// Apply optional fields
+	if p.WorkingDir != "" {
+		process.WorkingDir = p.WorkingDir
+	}
+	if len(p.Environment) > 0 {
+		process.Environment = p.Environment
+	}
+	if p.Type != "" {
+		process.Type = p.Type
+	}
+	if p.Port > 0 {
+		process.Port = p.Port
+	}
+	
+	if err := s.processService.Create(process); err != nil {
+		return nil, err
+	}
+	
+	return process, nil
+}
+
+type ProcessIDParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handleProcessStart(params json.RawMessage) (interface{}, error) {
+	var p ProcessIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	if err := s.processService.Start(p.ID); err != nil {
+		return nil, err
+	}
+	
+	return map[string]string{"status": "started"}, nil
+}
+
+func (s *MCPServer) handleProcessStop(params json.RawMessage) (interface{}, error) {
+	var p ProcessIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	if err := s.processService.Stop(p.ID); err != nil {
+		return nil, err
+	}
+	
+	return map[string]string{"status": "stopped"}, nil
+}
+
+type ListProcessesParams struct {
+	ProjectID *string             `json:"projectId,omitempty"`
+	Status    *domain.ProcessStatus `json:"status,omitempty"`
+	Type      *domain.ProcessType   `json:"type,omitempty"`
+}
+
+func (s *MCPServer) handleProcessList(params json.RawMessage) (interface{}, error) {
+	var p ListProcessesParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == nil {
+		current, err := s.projectService.GetCurrent()
+		if err == nil {
+			projectID = &current.ID
+		}
+	}
+	
+	filter := domain.ProcessFilter{
+		ProjectID: projectID,
+		Status:    p.Status,
+		Type:      p.Type,
+	}
+	
+	processes, err := s.processService.List(filter)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return formatted markdown
+	return FormatProcessesAsMarkdown(processes), nil
+}
+
+func (s *MCPServer) handleProcessGet(params json.RawMessage) (interface{}, error) {
+	var p ProcessIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.processService.Get(p.ID)
+}
+
+type ProcessLogsParams struct {
+	ID    string `json:"id"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+func (s *MCPServer) handleProcessLogs(params json.RawMessage) (interface{}, error) {
+	var p ProcessLogsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	if p.Limit == 0 {
+		p.Limit = 100
+	}
+	
+	logs, err := s.processService.GetLogs(p.ID, p.Limit)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return formatted markdown
+	return FormatProcessLogsAsMarkdown(logs), nil
+}
+
+func (s *MCPServer) handleProcessStatus(params json.RawMessage) (interface{}, error) {
+	var p ProcessIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	process, err := s.processService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return formatted process status
+	return FormatProcessStatusAsMarkdown(process), nil
+}
+
+type UpdateProcessParams struct {
+	ID      string                 `json:"id"`
+	Updates map[string]interface{} `json:"updates"`
+}
+
+func (s *MCPServer) handleProcessUpdate(params json.RawMessage) (interface{}, error) {
+	var p UpdateProcessParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	return s.processService.Update(p.ID, p.Updates)
+}
+
+type CreateProcessGroupParams struct {
+	ProjectID   string   `json:"projectId,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	ProcessIDs  []string `json:"processIds,omitempty"`
+}
+
+func (s *MCPServer) handleProcessGroupCreate(params json.RawMessage) (interface{}, error) {
+	var p CreateProcessGroupParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	group := domain.NewProcessGroup(projectID, p.Name, p.Description)
+	if len(p.ProcessIDs) > 0 {
+		group.ProcessIDs = p.ProcessIDs
+	}
+	
+	if err := s.processService.CreateGroup(group); err != nil {
+		return nil, err
+	}
+	
+	return group, nil
+}
+
+type ProcessGroupIDParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handleProcessGroupStart(params json.RawMessage) (interface{}, error) {
+	var p ProcessGroupIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	if err := s.processService.StartGroup(p.ID); err != nil {
+		return nil, err
+	}
+	
+	return map[string]string{"status": "group started"}, nil
+}
+
+func (s *MCPServer) handleProcessGroupStop(params json.RawMessage) (interface{}, error) {
+	var p ProcessGroupIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	if err := s.processService.StopGroup(p.ID); err != nil {
+		return nil, err
+	}
+	
+	return map[string]string{"status": "group stopped"}, nil
+}
+
+// TODO handlers
+type CreateTodoParams struct {
+	ProjectID string               `json:"projectId,omitempty"`
+	Card      *CreateTodoCard      `json:"card"`
+	Context   *CreateTodoContext   `json:"context"`
+	Criteria  *CreateTodoCriteria  `json:"criteria"`
+}
+
+type CreateTodoCard struct {
+	Title          string            `json:"title"`
+	Description    string            `json:"description"`
+	Priority       domain.Priority   `json:"priority,omitempty"`
+	DueDate        *time.Time        `json:"dueDate,omitempty"`
+	EstimatedHours *float64          `json:"estimatedHours,omitempty"`
+	Labels         []string          `json:"labels,omitempty"`
+	AssignedTo     *string           `json:"assignedTo,omitempty"`
+}
+
+type CreateTodoContext struct {
+	Files        []string `json:"files,omitempty"`
+	Dependencies []string `json:"dependencies"`
+	Assumptions  []string `json:"assumptions"`
+}
+
+type CreateTodoCriteria struct {
+	Acceptance   []string `json:"acceptance"`
+	Verification []string `json:"verification,omitempty"`
+}
+
+func (s *MCPServer) handleTodoCreate(params json.RawMessage) (interface{}, error) {
+	var p CreateTodoParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Validate required structures
+	if p.Card == nil {
+		return nil, fmt.Errorf("card is required")
+	}
+	if p.Context == nil {
+		return nil, fmt.Errorf("context is required")
+	}
+	if p.Criteria == nil {
+		return nil, fmt.Errorf("criteria is required")
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	// Set default priority if not specified
+	priority := p.Card.Priority
+	if priority == "" {
+		priority = domain.PriorityMedium
+	}
+	
+	// Create the TODO with the Card information
+	todo := domain.NewTODO(projectID, p.Card.Title, p.Card.Description, priority)
+	
+	// Apply Card fields
+	if p.Card.DueDate != nil {
+		todo.SetDueDate(*p.Card.DueDate)
+	}
+	if p.Card.EstimatedHours != nil {
+		todo.Card.EstimatedHours = p.Card.EstimatedHours
+	}
+	if len(p.Card.Labels) > 0 {
+		todo.Card.Labels = p.Card.Labels
+	}
+	if p.Card.AssignedTo != nil {
+		todo.Card.AssignedTo = p.Card.AssignedTo
+	}
+	
+	// Apply Context fields
+	if len(p.Context.Files) > 0 {
+		todo.Context.Files = p.Context.Files
+	}
+	todo.Context.Dependencies = p.Context.Dependencies
+	todo.Context.Assumptions = p.Context.Assumptions
+	
+	// Apply Criteria fields
+	todo.Criteria.Acceptance = p.Criteria.Acceptance
+	if len(p.Criteria.Verification) > 0 {
+		todo.Criteria.Verification = p.Criteria.Verification
+	}
+	
+	if err := s.taskService.Create(todo); err != nil {
+		return nil, err
+	}
+	
+	return todo, nil
+}
+
+type TodoIDParams struct {
+	ID string `json:"id"`
+}
+
+func (s *MCPServer) handleTodoComplete(params json.RawMessage) (interface{}, error) {
+	var p TodoIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	todo, err := s.taskService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	todo.Complete()
+	
+	updates := map[string]interface{}{
+		"status":      todo.Card.Status,
+		"completedAt": todo.Card.CompletedAt,
+		"updatedAt":   todo.Card.UpdatedAt,
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+func (s *MCPServer) handleTodoReopen(params json.RawMessage) (interface{}, error) {
+	var p TodoIDParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	todo, err := s.taskService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	todo.Reopen()
+	
+	updates := map[string]interface{}{
+		"status":      todo.Card.Status,
+		"completedAt": nil,
+		"updatedAt":   todo.Card.UpdatedAt,
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+type ListTodosParams struct {
+	ProjectID    *string           `json:"projectId,omitempty"`
+	Status       *domain.TaskStatus `json:"status,omitempty"`
+	Priority     *domain.Priority   `json:"priority,omitempty"`
+	Labels       []string          `json:"labels,omitempty"`
+	AssignedTo   *string           `json:"assignedTo,omitempty"`
+	DueBefore    *time.Time        `json:"dueBefore,omitempty"`
+	DueAfter     *time.Time        `json:"dueAfter,omitempty"`
+	Limit        int               `json:"limit,omitempty"`
+}
+
+func (s *MCPServer) handleTodoList(params json.RawMessage) (interface{}, error) {
+	var p ListTodosParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == nil {
+		current, err := s.projectService.GetCurrent()
+		if err == nil {
+			projectID = &current.ID
+		}
+	}
+	
+	filter := domain.TaskFilter{
+		ProjectID:  projectID,
+		Status:     p.Status,
+		Priority:   p.Priority,
+		Labels:     p.Labels,
+		AssignedTo: p.AssignedTo,
+		DueBefore:  p.DueBefore,
+		DueAfter:   p.DueAfter,
+	}
+	
+	todos, err := s.taskService.List(filter)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Apply limit if specified
+	if p.Limit > 0 && len(todos) > p.Limit {
+		todos = todos[:p.Limit]
+	}
+	
+	// Return markdown formatted string
+	return FormatTodosAsMarkdown(todos), nil
+}
+
+type OverdueTodosParams struct {
+	ProjectID *string `json:"projectId,omitempty"`
+}
+
+func (s *MCPServer) handleTodoOverdue(params json.RawMessage) (interface{}, error) {
+	var p OverdueTodosParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid parameters: %w", err)
+		}
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == nil {
+		current, err := s.projectService.GetCurrent()
+		if err == nil {
+			projectID = &current.ID
+		}
+	}
+	
+	// For now, get all tasks and filter manually (can be optimized later)
+	allTasks, err := s.taskService.List(domain.TaskFilter{ProjectID: projectID})
+	if err != nil {
+		return nil, err
+	}
+	
+	var overdueTasks []*domain.Task
+	for _, task := range allTasks {
+		if task.IsOverdue() {
+			overdueTasks = append(overdueTasks, task)
+		}
+	}
+	
+	return overdueTasks, nil
+}
+
+type UpdateTodoPriorityParams struct {
+	ID       string          `json:"id"`
+	Priority domain.Priority `json:"priority"`
+}
+
+func (s *MCPServer) handleTodoUpdatePriority(params json.RawMessage) (interface{}, error) {
+	var p UpdateTodoPriorityParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	updates := map[string]interface{}{
+		"priority":  p.Priority,
+		"updatedAt": time.Now(),
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+type SetTodoDueParams struct {
+	ID      string     `json:"id"`
+	DueDate *time.Time `json:"dueDate"`
+}
+
+func (s *MCPServer) handleTodoSetDue(params json.RawMessage) (interface{}, error) {
+	var p SetTodoDueParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	updates := map[string]interface{}{
+		"dueDate":   p.DueDate,
+		"updatedAt": time.Now(),
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+type TodoLabelParams struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+func (s *MCPServer) handleTodoAddLabel(params json.RawMessage) (interface{}, error) {
+	var p TodoLabelParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	todo, err := s.taskService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	todo.AddLabel(p.Label)
+	
+	updates := map[string]interface{}{
+		"labels":    todo.Card.Labels,
+		"updatedAt": todo.Card.UpdatedAt,
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+func (s *MCPServer) handleTodoRemoveLabel(params json.RawMessage) (interface{}, error) {
+	var p TodoLabelParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	todo, err := s.taskService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	todo.RemoveLabel(p.Label)
+	
+	updates := map[string]interface{}{
+		"labels":    todo.Card.Labels,
+		"updatedAt": todo.Card.UpdatedAt,
+	}
+	
+	return s.taskService.Update(p.ID, updates)
+}
+
+type UpdateTodoProgressParams struct {
+	ID    string  `json:"id"`
+	Hours float64 `json:"hours"`
+}
+
+func (s *MCPServer) handleTodoUpdateProgress(params json.RawMessage) (interface{}, error) {
+	var p UpdateTodoProgressParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	todo, err := s.taskService.Get(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	
+	todo.UpdateProgress(p.Hours)
+	
+	updates := map[string]interface{}{
+		"actualHours": todo.Card.ActualHours,
+		"updatedAt":   todo.Card.UpdatedAt,
+	}
+	
+	return s.taskService.Update(p.ID, updates)
 }

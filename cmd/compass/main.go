@@ -14,6 +14,17 @@ import (
 )
 
 func main() {
+	// Check for CLI mode flag
+	if len(os.Args) > 1 && os.Args[1] == "--cli" {
+		runCLI()
+		return
+	}
+
+	// Default to MCP transport mode
+	runMCPTransport()
+}
+
+func runMCPTransport() {
 	// Get current working directory for file storage
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -32,12 +43,45 @@ func main() {
 	contextRetriever := service.NewContextRetriever(fileStorage, fileStorage)
 	planningService := service.NewPlanningService(fileStorage, taskService, projectService)
 	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
+	processService := service.NewProcessService(fileStorage, cwd)
 
 	// Initialize MCP server
-	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService)
+	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
 
-	fmt.Println("Compass MCP Server started")
+	// Start MCP transport
+	transport := mcp.NewMCPTransport(mcpServer)
+	if err := transport.Start(); err != nil {
+		log.Fatal("MCP transport error:", err)
+	}
+}
+
+func runCLI() {
+	// Get current working directory for file storage
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatal("Failed to get current directory:", err)
+	}
+
+	// Initialize storage
+	fileStorage, err := storage.NewFileStorage(cwd)
+	if err != nil {
+		log.Fatal("Failed to initialize file storage:", err)
+	}
+
+	// Initialize services
+	taskService := service.NewTaskService(fileStorage)
+	projectService := service.NewProjectService(fileStorage)
+	contextRetriever := service.NewContextRetriever(fileStorage, fileStorage)
+	planningService := service.NewPlanningService(fileStorage, taskService, projectService)
+	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
+	processService := service.NewProcessService(fileStorage, cwd)
+
+	// Initialize MCP server
+	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
+
+	fmt.Println("Compass CLI started")
 	fmt.Println("Type 'help' for available commands or 'quit' to exit")
+	fmt.Println("Default mode is MCP transport, use --cli for CLI mode")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -109,6 +153,30 @@ func printHelp() {
 	fmt.Println("  Summary commands:")
 	fmt.Println("    compass.project.summary      - Generate intelligent project summary and insights")
 	fmt.Println()
+	fmt.Println("  Process commands:")
+	fmt.Println("    compass.process.create       - Create a new process")
+	fmt.Println("    compass.process.start        - Start a process")
+	fmt.Println("    compass.process.stop         - Stop a process")
+	fmt.Println("    compass.process.list         - List processes")
+	fmt.Println("    compass.process.get          - Get process details")
+	fmt.Println("    compass.process.logs         - Get process logs")
+	fmt.Println("    compass.process.update       - Update process configuration")
+	fmt.Println("    compass.process.group.create - Create a process group")
+	fmt.Println("    compass.process.group.start  - Start all processes in a group")
+	fmt.Println("    compass.process.group.stop   - Stop all processes in a group")
+	fmt.Println()
+	fmt.Println("  TODO commands:")
+	fmt.Println("    compass.todo.create          - Create a new TODO item")
+	fmt.Println("    compass.todo.complete        - Mark TODO as completed")
+	fmt.Println("    compass.todo.reopen          - Reopen a completed TODO")
+	fmt.Println("    compass.todo.list            - List TODO items with filters")
+	fmt.Println("    compass.todo.overdue         - Get overdue TODO items")
+	fmt.Println("    compass.todo.priority        - Update TODO priority")
+	fmt.Println("    compass.todo.due             - Set TODO due date")
+	fmt.Println("    compass.todo.label.add       - Add label to TODO")
+	fmt.Println("    compass.todo.label.remove    - Remove label from TODO")
+	fmt.Println("    compass.todo.progress        - Update TODO progress hours")
+	fmt.Println()
 	fmt.Println("Example usage:")
 	fmt.Println("  compass.project.create {\"name\":\"My Project\",\"description\":\"A test project\",\"goal\":\"Learn Compass\"}")
 	fmt.Println("  compass.task.create {\"projectId\":\"<project-id>\",\"title\":\"Setup\",\"description\":\"Initial setup\"}")
@@ -119,6 +187,12 @@ func printHelp() {
 	fmt.Println("  compass.discovery.add {\"insight\":\"Users prefer OAuth\",\"impact\":\"high\",\"source\":\"research\"}")
 	fmt.Println("  compass.decision.record {\"question\":\"Database choice\",\"choice\":\"PostgreSQL\",\"rationale\":\"Better JSON support\"}")
 	fmt.Println("  compass.project.summary {}")
+	fmt.Println("  compass.process.create {\"name\":\"Web Server\",\"command\":\"npm\",\"args\":[\"run\",\"dev\"],\"type\":\"web-server\",\"port\":3000}")
+	fmt.Println("  compass.process.start {\"id\":\"<process-id>\"}")
+	fmt.Println("  compass.process.logs {\"id\":\"<process-id>\",\"limit\":50}")
+	fmt.Println("  compass.todo.create {\"title\":\"Implement auth\",\"priority\":\"high\",\"dueDate\":\"2025-01-01T10:00:00Z\",\"labels\":[\"backend\"]}")
+	fmt.Println("  compass.todo.complete {\"id\":\"<todo-id>\"}")
+	fmt.Println("  compass.todo.overdue {}")
 
 }
 

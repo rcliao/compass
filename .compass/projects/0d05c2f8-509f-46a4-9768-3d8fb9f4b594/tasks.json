@@ -5,7 +5,8 @@
     "card": {
       "title": "setup",
       "description": "initial setup",
-      "status": "planned",
+      "status": "completed",
+      "priority": "",
       "createdAt": "2025-07-02T15:07:49.648787-07:00",
       "updatedAt": "2025-07-02T15:07:49.648787-07:00"
     },
@@ -16,6 +17,36 @@
       "blockers": [],
       "decisions": [],
       "lastVerified": "2025-07-02T15:07:49.648787-07:00",
+      "confidence": "medium"
+    },
+    "criteria": {
+      "acceptance": [],
+      "verification": []
+    }
+  },
+  {
+    "id": "9b969868-871c-4663-af77-12052262e32b",
+    "projectId": "0d05c2f8-509f-46a4-9768-3d8fb9f4b594",
+    "card": {
+      "title": "Implement authentication",
+      "description": "Add user authentication system with OAuth2 support",
+      "status": "completed",
+      "priority": "high",
+      "labels": [
+        "backend",
+        "security"
+      ],
+      "estimatedHours": 8,
+      "createdAt": "2025-07-21T12:03:49.396083-07:00",
+      "updatedAt": "2025-07-21T12:03:49.396083-07:00"
+    },
+    "context": {
+      "files": [],
+      "dependencies": [],
+      "assumptions": [],
+      "blockers": [],
+      "decisions": [],
+      "lastVerified": "2025-07-21T12:03:49.396083-07:00",
       "confidence": "medium"
     },
     "criteria": {

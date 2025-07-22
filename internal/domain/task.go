@@ -13,6 +13,17 @@ const (
 	StatusInProgress TaskStatus = "in-progress"
 	StatusCompleted  TaskStatus = "completed"
 	StatusBlocked    TaskStatus = "blocked"
+	StatusOnHold     TaskStatus = "on-hold"
+	StatusCanceled   TaskStatus = "canceled"
+)
+
+type Priority string
+
+const (
+	PriorityLow      Priority = "low"
+	PriorityMedium   Priority = "medium"
+	PriorityHigh     Priority = "high"
+	PriorityCritical Priority = "critical"
 )
 
 type Confidence string
@@ -35,10 +46,17 @@ type Card struct {
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
 	Status      TaskStatus `json:"status"`
+	Priority    Priority   `json:"priority"`
 	Parent      *string    `json:"parent,omitempty"`
 	Children    []string   `json:"children,omitempty"`
+	Labels      []string   `json:"labels,omitempty"`
+	DueDate     *time.Time `json:"dueDate,omitempty"`
+	EstimatedHours *float64 `json:"estimatedHours,omitempty"`
+	ActualHours    *float64 `json:"actualHours,omitempty"`
+	AssignedTo     *string  `json:"assignedTo,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
 type Context struct {
@@ -67,7 +85,9 @@ func NewTask(projectID, title, description string) *Task {
 			Title:       title,
 			Description: description,
 			Status:      StatusPlanned,
+			Priority:    PriorityMedium,
 			Children:    make([]string, 0),
+			Labels:      make([]string, 0),
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		},
@@ -89,9 +109,16 @@ func NewTask(projectID, title, description string) *Task {
 }
 
 type TaskFilter struct {
-	ProjectID *string
-	Status    *TaskStatus
-	Parent    *string
+	ProjectID    *string
+	Status       *TaskStatus
+	Priority     *Priority
+	Parent       *string
+	Labels       []string
+	AssignedTo   *string
+	DueBefore    *time.Time
+	DueAfter     *time.Time
+	CreatedAfter *time.Time
+	UpdatedAfter *time.Time
 }
 
 type TaskRepository interface {
@@ -100,4 +127,114 @@ type TaskRepository interface {
 	Get(id string) (*Task, error)
 	List(filter TaskFilter) ([]*Task, error)
 	Delete(id string) error
+}
+
+// Helper methods for TODO functionality
+
+// NewTODO creates a task optimized for TODO management
+func NewTODO(projectID, title, description string, priority Priority) *Task {
+	task := NewTask(projectID, title, description)
+	task.Card.Priority = priority
+	return task
+}
+
+// IsOverdue checks if the task is past its due date
+func (t *Task) IsOverdue() bool {
+	if t.Card.DueDate == nil {
+		return false
+	}
+	return time.Now().After(*t.Card.DueDate) && t.Card.Status != StatusCompleted
+}
+
+// DaysUntilDue returns the number of days until the task is due (negative if overdue)
+func (t *Task) DaysUntilDue() *int {
+	if t.Card.DueDate == nil {
+		return nil
+	}
+	days := int(t.Card.DueDate.Sub(time.Now()).Hours() / 24)
+	return &days
+}
+
+// Complete marks the task as completed and sets completion time
+func (t *Task) Complete() {
+	t.Card.Status = StatusCompleted
+	now := time.Now()
+	t.Card.CompletedAt = &now
+	t.Card.UpdatedAt = now
+}
+
+// Reopen reopens a completed task
+func (t *Task) Reopen() {
+	if t.Card.Status == StatusCompleted {
+		t.Card.Status = StatusPlanned
+		t.Card.CompletedAt = nil
+		t.Card.UpdatedAt = time.Now()
+	}
+}
+
+// AddLabel adds a label to the task if it doesn't already exist
+func (t *Task) AddLabel(label string) {
+	for _, l := range t.Card.Labels {
+		if l == label {
+			return
+		}
+	}
+	t.Card.Labels = append(t.Card.Labels, label)
+	t.Card.UpdatedAt = time.Now()
+}
+
+// RemoveLabel removes a label from the task
+func (t *Task) RemoveLabel(label string) {
+	for i, l := range t.Card.Labels {
+		if l == label {
+			t.Card.Labels = append(t.Card.Labels[:i], t.Card.Labels[i+1:]...)
+			t.Card.UpdatedAt = time.Now()
+			break
+		}
+	}
+}
+
+// HasLabel checks if the task has a specific label
+func (t *Task) HasLabel(label string) bool {
+	for _, l := range t.Card.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
+}
+
+// SetDueDate sets the due date for the task
+func (t *Task) SetDueDate(dueDate time.Time) {
+	t.Card.DueDate = &dueDate
+	t.Card.UpdatedAt = time.Now()
+}
+
+// ClearDueDate removes the due date from the task
+func (t *Task) ClearDueDate() {
+	t.Card.DueDate = nil
+	t.Card.UpdatedAt = time.Now()
+}
+
+// UpdateProgress updates actual hours worked
+func (t *Task) UpdateProgress(hours float64) {
+	if t.Card.ActualHours == nil {
+		t.Card.ActualHours = &hours
+	} else {
+		*t.Card.ActualHours += hours
+	}
+	t.Card.UpdatedAt = time.Now()
+}
+
+// GetProgressPercentage returns progress as a percentage (actual/estimated * 100)
+func (t *Task) GetProgressPercentage() *float64 {
+	if t.Card.EstimatedHours == nil || *t.Card.EstimatedHours == 0 {
+		return nil
+	}
+	if t.Card.ActualHours == nil {
+		zero := 0.0
+		return &zero
+	}
+	percentage := (*t.Card.ActualHours / *t.Card.EstimatedHours) * 100
+	return &percentage
 }
