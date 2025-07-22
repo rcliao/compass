@@ -209,7 +209,10 @@ func (ps *ProcessService) Start(processID string) error {
 	}()
 	
 	// Log start event
-	ps.addLog(processID, domain.LogTypeSystem, fmt.Sprintf("Process started with PID %d", process.PID))
+	buffer := ps.logBuffers[processID] // Safe since we hold the lock
+	if buffer != nil {
+		ps.addLogUnsafe(buffer, processID, domain.LogTypeSystem, fmt.Sprintf("Process started with PID %d", process.PID))
+	}
 	
 	return nil
 }
@@ -247,7 +250,10 @@ func (ps *ProcessService) Stop(processID string) error {
 	info.Cancel()
 	
 	// Log stop event
-	ps.addLog(processID, domain.LogTypeSystem, "Process stop requested")
+	buffer := ps.logBuffers[processID] // Safe since we hold the lock
+	if buffer != nil {
+		ps.addLogUnsafe(buffer, processID, domain.LogTypeSystem, "Process stop requested")
+	}
 	
 	return nil
 }
@@ -380,17 +386,20 @@ func (ps *ProcessService) captureOutput(processID string, pipe io.Reader, logTyp
 	}
 }
 
-// addLog adds a log entry
+// addLog adds a log entry (thread-safe - acquires ps.mu lock)
 func (ps *ProcessService) addLog(processID string, logType domain.LogType, message string) {
-	log := domain.NewProcessLog(processID, logType, message)
-	
-	ps.mu.Lock()
+	ps.mu.RLock()
 	buffer, exists := ps.logBuffers[processID]
-	ps.mu.Unlock()
+	ps.mu.RUnlock()
 	
-	if !exists {
-		return
+	if exists {
+		ps.addLogUnsafe(buffer, processID, logType, message)
 	}
+}
+
+// addLogUnsafe adds a log entry without acquiring ps.mu (for use within methods that already hold the lock)
+func (ps *ProcessService) addLogUnsafe(buffer *LogBuffer, processID string, logType domain.LogType, message string) {
+	log := domain.NewProcessLog(processID, logType, message)
 	
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
