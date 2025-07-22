@@ -124,7 +124,10 @@ func (t *MCPTransport) processRequest(data []byte) *JSONRPCResponse {
 	case "shutdown":
 		return t.handleShutdown(req)
 	case "exit":
-		// Notification - exit the server
+		// Notification - exit the server with cleanup
+		fmt.Fprintf(os.Stderr, "Transport: Received exit command, calling server shutdown...\n")
+		t.server.Shutdown()
+		fmt.Fprintf(os.Stderr, "Transport: Server shutdown completed, exiting...\n")
 		os.Exit(0)
 		return nil
 	default:

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/rcliao/compass/internal/mcp"
 	"github.com/rcliao/compass/internal/service"
@@ -48,6 +50,19 @@ func runMCPTransport() {
 	// Initialize MCP server
 	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
 
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-sigChan
+		log.Println("Main: Received shutdown signal, cleaning up...")
+		log.Println("Main: Calling mcpServer.Shutdown()...")
+		mcpServer.Shutdown()
+		log.Println("Main: Shutdown complete, exiting...")
+		os.Exit(0)
+	}()
+
 	// Start MCP transport
 	transport := mcp.NewMCPTransport(mcpServer)
 	if err := transport.Start(); err != nil {
@@ -78,6 +93,18 @@ func runCLI() {
 
 	// Initialize MCP server
 	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived shutdown signal, cleaning up...")
+		mcpServer.Shutdown()
+		fmt.Println("Goodbye!")
+		os.Exit(0)
+	}()
 
 	fmt.Println("Compass CLI started")
 	fmt.Println("Type 'help' for available commands or 'quit' to exit")

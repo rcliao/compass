@@ -1250,3 +1250,15 @@ func (s *MCPServer) handleTodoUpdateProgress(params json.RawMessage) (interface{
 	
 	return s.taskService.Update(p.ID, updates)
 }
+
+// Shutdown gracefully shuts down the MCP server and all managed processes
+func (s *MCPServer) Shutdown() {
+	log.Printf("MCPServer: Shutdown called")
+	if s.processService != nil {
+		log.Printf("MCPServer: Calling processService.Shutdown()")
+		s.processService.Shutdown()
+		log.Printf("MCPServer: processService.Shutdown() completed")
+	} else {
+		log.Printf("MCPServer: processService is nil!")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -499,11 +500,15 @@ func (ps *ProcessService) loadProcesses() {
 
 // Shutdown gracefully shuts down the process service
 func (ps *ProcessService) Shutdown() {
+	log.Printf("ProcessService: Starting shutdown...")
 	ps.cancel()
 	
 	// Stop all running processes
 	ps.mu.Lock()
+	processCount := len(ps.processes)
+	log.Printf("ProcessService: Found %d processes to stop", processCount)
 	for id := range ps.processes {
+		log.Printf("ProcessService: Stopping process %s", id)
 		ps.Stop(id)
 	}
 	ps.mu.Unlock()
@@ -516,15 +521,20 @@ func (ps *ProcessService) Shutdown() {
 		ps.mu.RUnlock()
 		
 		if count == 0 {
+			log.Printf("ProcessService: All processes stopped successfully")
 			break
 		}
+		
+		log.Printf("ProcessService: Waiting for %d processes to stop...", count)
 		
 		select {
 		case <-timeout:
 			// Force kill remaining processes
+			log.Printf("ProcessService: Timeout reached, force killing remaining processes")
 			ps.mu.Lock()
 			for _, info := range ps.processes {
 				if info.Cmd.Process != nil {
+					log.Printf("ProcessService: Force killing process PID %d", info.Cmd.Process.Pid)
 					info.Cmd.Process.Kill()
 				}
 			}
@@ -534,4 +544,5 @@ func (ps *ProcessService) Shutdown() {
 			// Check again
 		}
 	}
+	log.Printf("ProcessService: Shutdown completed")
 }
