@@ -755,6 +755,37 @@ func (t *MCPTransport) handleResourcesList(req JSONRPCRequest) *JSONRPCResponse 
 			"description": "All blocked TODO items",
 			"mimeType":    "application/json",
 		},
+		// Process Management Resources
+		{
+			"uri":         "compass://processes",
+			"name":        "All Processes",
+			"description": "List of all managed processes across all projects",
+			"mimeType":    "text/markdown",
+		},
+		{
+			"uri":         "compass://processes/running",
+			"name":        "Running Processes",
+			"description": "Currently running processes with status information",
+			"mimeType":    "text/markdown",
+		},
+		{
+			"uri":         "compass://processes/failed",
+			"name":        "Failed Processes",
+			"description": "Processes that have failed or crashed",
+			"mimeType":    "text/markdown",
+		},
+		{
+			"uri":         "compass://process-groups",
+			"name":        "Process Groups",
+			"description": "All process groups and their member processes",
+			"mimeType":    "application/json",
+		},
+		{
+			"uri":         "compass://processes/logs",
+			"name":        "Process Logs Summary",
+			"description": "Recent logs from all active processes",
+			"mimeType":    "text/markdown",
+		},
 	}
 
 	return &JSONRPCResponse{
@@ -805,6 +836,40 @@ func (t *MCPTransport) handleResourceRead(req JSONRPCRequest) *JSONRPCResponse {
 	case "compass://blockers":
 		// Get blocked items
 		result, err = t.server.HandleCommand("compass.blockers", nil)
+	// Process Management Resources
+	case "compass://processes":
+		// List all processes
+		result, err = t.server.HandleCommand("compass.process.list", nil)
+	case "compass://processes/running":
+		// List running processes
+		runningFilter := map[string]interface{}{"status": "running"}
+		params, _ := json.Marshal(runningFilter)
+		result, err = t.server.HandleCommand("compass.process.list", params)
+	case "compass://processes/failed":
+		// List failed/crashed processes
+		failedFilter := map[string]interface{}{"status": "failed"}
+		params1, _ := json.Marshal(failedFilter)
+		result1, err1 := t.server.HandleCommand("compass.process.list", params1)
+		crashedFilter := map[string]interface{}{"status": "crashed"}
+		params2, _ := json.Marshal(crashedFilter)
+		result2, err2 := t.server.HandleCommand("compass.process.list", params2)
+		
+		if err1 != nil {
+			err = err1
+		} else if err2 != nil {
+			err = err2
+		} else {
+			// Combine failed and crashed processes
+			result = fmt.Sprintf("# Failed and Crashed Processes\n\n## Failed Processes\n\n%s\n\n## Crashed Processes\n\n%s", result1, result2)
+		}
+	case "compass://process-groups":
+		// List all process groups - need to implement this command
+		result = "Process groups listing not yet implemented"
+		err = nil
+	case "compass://processes/logs":
+		// Get recent logs from all processes - would need a special handler
+		result = "# Process Logs Summary\n\nCombined process logs not yet implemented.\nUse `compass.process.logs` with specific process ID to get logs for individual processes."
+		err = nil
 	default:
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -864,8 +929,89 @@ func (t *MCPTransport) handleResourceRead(req JSONRPCRequest) *JSONRPCResponse {
 
 // handlePromptsList handles MCP prompts list requests
 func (t *MCPTransport) handlePromptsList(req JSONRPCRequest) *JSONRPCResponse {
-	// Define available Compass prompts (currently none, but framework is ready)
-	prompts := []map[string]interface{}{}
+	// Define available Compass prompts
+	prompts := []map[string]interface{}{
+		{
+			"name":        "setup-dev-environment",
+			"description": "Set up a complete development environment with web server, database, and build tools",
+			"arguments": []map[string]interface{}{
+				{
+					"name":        "project_type",
+					"description": "Type of project (web, api, fullstack, mobile)",
+					"required":    true,
+				},
+				{
+					"name":        "framework",
+					"description": "Framework to use (react, vue, express, nextjs, etc.)",
+					"required":    false,
+				},
+				{
+					"name":        "include_database",
+					"description": "Whether to include database setup",
+					"required":    false,
+				},
+			},
+		},
+		{
+			"name":        "debug-process-issues",
+			"description": "Debug common process issues like failed starts, crashes, or performance problems",
+			"arguments": []map[string]interface{}{
+				{
+					"name":        "process_name",
+					"description": "Name or ID of the process to debug",
+					"required":    true,
+				},
+				{
+					"name":        "issue_type",
+					"description": "Type of issue (startup_failure, crash, performance, logs)",
+					"required":    false,
+				},
+			},
+		},
+		{
+			"name":        "start-testing-workflow",
+			"description": "Start a complete testing workflow with test runners, coverage, and CI processes",
+			"arguments": []map[string]interface{}{
+				{
+					"name":        "test_type",
+					"description": "Type of testing (unit, integration, e2e, all)",
+					"required":    true,
+				},
+				{
+					"name":        "watch_mode",
+					"description": "Whether to run tests in watch mode",
+					"required":    false,
+				},
+			},
+		},
+		{
+			"name":        "optimize-build-process",
+			"description": "Analyze and optimize build processes for better performance",
+			"arguments": []map[string]interface{}{
+				{
+					"name":        "build_tool",
+					"description": "Build tool being used (webpack, vite, rollup, etc.)",
+					"required":    false,
+				},
+			},
+		},
+		{
+			"name":        "monitor-services",
+			"description": "Monitor all running services and provide health status report",
+			"arguments": []map[string]interface{}{
+				{
+					"name":        "include_logs",
+					"description": "Whether to include recent logs in the report",
+					"required":    false,
+				},
+				{
+					"name":        "alert_threshold",
+					"description": "Alert threshold for service health (low, medium, high)",
+					"required":    false,
+				},
+			},
+		},
+	}
 
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",
