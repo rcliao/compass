@@ -734,6 +734,8 @@ func (t *MCPTransport) handleToolsList(req JSONRPCRequest) *JSONRPCResponse {
 
 // handleToolCall handles MCP tool calls
 func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
+	t.addDebugLog(fmt.Sprintf("handleToolCall started for request ID: %v", req.ID))
+	
 	type ToolCallParams struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments,omitempty"`
@@ -741,6 +743,7 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 
 	var params ToolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.addDebugLog(fmt.Sprintf("Failed to unmarshal tool params: %v", err))
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -751,6 +754,8 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 			},
 		}
 	}
+	
+	t.addDebugLog(fmt.Sprintf("Tool call params: name=%s", params.Name))
 
 	// Convert arguments to JSON for HandleCommand
 	var argsJSON json.RawMessage
@@ -758,6 +763,7 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 		var err error
 		argsJSON, err = json.Marshal(params.Arguments)
 		if err != nil {
+			t.addDebugLog(fmt.Sprintf("Failed to marshal arguments: %v", err))
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -1216,6 +1222,11 @@ func (t *MCPTransport) sendResponse(response *JSONRPCResponse) error {
 	// Write to stdout with newline
 	if _, err := t.writer.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
+	}
+	
+	// Force flush if writer supports it
+	if flusher, ok := t.writer.(interface{ Flush() error }); ok {
+		flusher.Flush()
 	}
 
 	return nil

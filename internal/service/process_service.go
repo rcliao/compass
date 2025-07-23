@@ -124,7 +124,7 @@ func (ps *ProcessService) Create(process *domain.Process) error {
 	// Check for port conflicts if port is specified
 	if process.Port > 0 {
 		log.Printf("[DEBUG] Checking port availability: %d", process.Port)
-		if err := ps.checkPortAvailable(process.Port); err != nil {
+		if err := ps.checkPortAvailableUnlocked(process.Port); err != nil {
 			return fmt.Errorf("port conflict: %w", err)
 		}
 		log.Printf("[DEBUG] Port availability check passed")
@@ -813,49 +813,99 @@ func (ps *ProcessService) isSensitiveEnvVar(key string) bool {
 
 // checkPortAvailable checks if a port is available for use
 func (ps *ProcessService) checkPortAvailable(port int) error {
+	log.Printf("[DEBUG] checkPortAvailable started for port: %d", port)
+	
 	// Check if port is already used by another managed process
+	log.Printf("[DEBUG] Acquiring mutex lock to check managed processes")
 	ps.mu.RLock()
+	log.Printf("[DEBUG] Mutex lock acquired, checking %d managed processes", len(ps.processes))
 	for _, info := range ps.processes {
 		if info.Process.Port == port && (info.Process.Status == domain.ProcessStatusRunning || 
 			info.Process.Status == domain.ProcessStatusStarting) {
 			ps.mu.RUnlock()
+			log.Printf("[DEBUG] Port %d in use by managed process: %s", port, info.Process.Name)
 			return fmt.Errorf("port %d is already in use by process '%s' (ID: %s)", 
 				port, info.Process.Name, info.Process.ID[:8])
 		}
 	}
 	ps.mu.RUnlock()
+	log.Printf("[DEBUG] Port %d not used by managed processes", port)
 	
 	// Check if port is available on the system
+	log.Printf("[DEBUG] Checking system port availability for: %d", port)
 	if !ps.isPortAvailable(port) {
+		log.Printf("[DEBUG] Port %d is in use, suggesting alternatives", port)
 		// Suggest alternative ports
 		alternatives := ps.suggestAlternativePorts(port)
+		log.Printf("[DEBUG] Alternative ports suggested: %v", alternatives)
 		return fmt.Errorf("port %d is already in use by another process. Suggested alternatives: %v", 
 			port, alternatives)
 	}
 	
+	log.Printf("[DEBUG] Port %d is available", port)
+	return nil
+}
+
+// checkPortAvailableUnlocked is an internal version that doesn't acquire locks
+// (assumes caller already holds appropriate lock)
+func (ps *ProcessService) checkPortAvailableUnlocked(port int) error {
+	log.Printf("[DEBUG] checkPortAvailableUnlocked started for port: %d", port)
+	
+	// Check if port is already used by another managed process
+	// (no mutex needed - caller already holds lock)
+	log.Printf("[DEBUG] Checking %d managed processes (unlocked)", len(ps.processes))
+	for _, info := range ps.processes {
+		if info.Process.Port == port && (info.Process.Status == domain.ProcessStatusRunning || 
+			info.Process.Status == domain.ProcessStatusStarting) {
+			log.Printf("[DEBUG] Port %d in use by managed process: %s", port, info.Process.Name)
+			return fmt.Errorf("port %d is already in use by process '%s' (ID: %s)", 
+				port, info.Process.Name, info.Process.ID[:8])
+		}
+	}
+	log.Printf("[DEBUG] Port %d not used by managed processes", port)
+	
+	// Check if port is available on the system
+	log.Printf("[DEBUG] Checking system port availability for: %d", port)
+	if !ps.isPortAvailable(port) {
+		log.Printf("[DEBUG] Port %d is in use, suggesting alternatives", port)
+		// Suggest alternative ports
+		alternatives := ps.suggestAlternativePorts(port)
+		log.Printf("[DEBUG] Alternative ports suggested: %v", alternatives)
+		return fmt.Errorf("port %d is already in use by another process. Suggested alternatives: %v", 
+			port, alternatives)
+	}
+	
+	log.Printf("[DEBUG] Port %d is available", port)
 	return nil
 }
 
 // isPortAvailable checks if a port is available on the system with timeout
 func (ps *ProcessService) isPortAvailable(port int) bool {
-	// Use a very short timeout to prevent hanging
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 100*time.Millisecond)
+	log.Printf("[DEBUG] Checking port availability: %d", port)
+	
+	// Try to bind to localhost specifically (not all interfaces)
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
-		// If connection fails, port is available
-		return true
+		log.Printf("[DEBUG] Port %d is in use (bind failed: %v)", port, err)
+		// If bind fails, port is in use
+		return false
 	}
-	conn.Close()
-	// If connection succeeds, port is in use
-	return false
+	
+	// Port is available, close the listener immediately
+	listener.Close()
+	log.Printf("[DEBUG] Port %d is available", port)
+	return true
 }
 
 // suggestAlternativePorts suggests alternative ports when there's a conflict
 func (ps *ProcessService) suggestAlternativePorts(originalPort int) []int {
+	log.Printf("[DEBUG] Suggesting alternative ports for: %d", originalPort)
 	alternatives := []int{}
 	
 	// Try only 3 immediate alternatives to prevent hanging
 	for offset := 1; offset <= 3 && len(alternatives) < 3; offset++ {
 		testPort := originalPort + offset
+		log.Printf("[DEBUG] Testing alternative port: %d", testPort)
 		if testPort <= 65535 && ps.isPortAvailable(testPort) {
 			alternatives = append(alternatives, testPort)
 		}
@@ -882,6 +932,7 @@ func (ps *ProcessService) suggestAlternativePorts(originalPort int) []int {
 		}
 	}
 	
+	log.Printf("[DEBUG] suggestAlternativePorts completed with %d alternatives: %v", len(alternatives), alternatives)
 	return alternatives
 }
 
