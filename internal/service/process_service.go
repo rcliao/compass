@@ -82,10 +82,13 @@ func (ps *ProcessService) Create(process *domain.Process) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	
+	log.Printf("[DEBUG] Process creation started for: %s", process.Name)
+	
 	// Validate command
 	if process.Command == "" {
 		return fmt.Errorf("command cannot be empty")
 	}
+	log.Printf("[DEBUG] Command validation passed")
 	
 	// Set defaults - use the directory where MCP server was started (user's project dir)
 	if process.WorkingDir == "" {
@@ -93,6 +96,7 @@ func (ps *ProcessService) Create(process *domain.Process) error {
 	}
 	
 	// Validate working directory exists
+	log.Printf("[DEBUG] Checking working directory: %s", process.WorkingDir)
 	if info, err := os.Stat(process.WorkingDir); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("working directory does not exist: %s", process.WorkingDir)
@@ -101,36 +105,47 @@ func (ps *ProcessService) Create(process *domain.Process) error {
 	} else if !info.IsDir() {
 		return fmt.Errorf("working directory is not a directory: %s", process.WorkingDir)
 	}
+	log.Printf("[DEBUG] Working directory validation passed")
 	
 	// Check if command is executable
+	log.Printf("[DEBUG] Checking command executable: %s", process.Command)
 	if !ps.isCommandExecutable(process.Command, process.WorkingDir) {
 		return fmt.Errorf("command not found or not executable: %s. Make sure the command is in PATH or use an absolute path", process.Command)
 	}
+	log.Printf("[DEBUG] Command executable validation passed")
 	
 	// Validate environment variables
+	log.Printf("[DEBUG] Validating environment variables")
 	if err := ps.validateEnvironmentVariables(process.Environment); err != nil {
 		return fmt.Errorf("invalid environment variables: %w", err)
 	}
+	log.Printf("[DEBUG] Environment variables validation passed")
 	
 	// Check for port conflicts if port is specified
 	if process.Port > 0 {
+		log.Printf("[DEBUG] Checking port availability: %d", process.Port)
 		if err := ps.checkPortAvailable(process.Port); err != nil {
 			return fmt.Errorf("port conflict: %w", err)
 		}
+		log.Printf("[DEBUG] Port availability check passed")
 	}
 	
 	// Save to storage
+	log.Printf("[DEBUG] Saving process to storage")
 	if err := ps.storage.SaveProcess(process.ProjectID, process); err != nil {
 		return fmt.Errorf("failed to save process: %w", err)
 	}
+	log.Printf("[DEBUG] Process saved to storage")
 	
 	// Initialize log buffer
+	log.Printf("[DEBUG] Initializing log buffer")
 	ps.logBuffers[process.ID] = &LogBuffer{
 		logs:    make([]*domain.ProcessLog, 0, 1000),
 		maxSize: 10000,
 		storage: ps.storage,
 	}
 	
+	log.Printf("[DEBUG] Process creation completed successfully for: %s", process.Name)
 	return nil
 }
 
@@ -821,55 +836,48 @@ func (ps *ProcessService) checkPortAvailable(port int) error {
 	return nil
 }
 
-// isPortAvailable checks if a port is available on the system
+// isPortAvailable checks if a port is available on the system with timeout
 func (ps *ProcessService) isPortAvailable(port int) bool {
-	conn, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	// Use a very short timeout to prevent hanging
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 100*time.Millisecond)
 	if err != nil {
-		return false
+		// If connection fails, port is available
+		return true
 	}
 	conn.Close()
-	return true
+	// If connection succeeds, port is in use
+	return false
 }
 
 // suggestAlternativePorts suggests alternative ports when there's a conflict
 func (ps *ProcessService) suggestAlternativePorts(originalPort int) []int {
 	alternatives := []int{}
 	
-	// Try ports near the original
-	for offset := 1; offset <= 10 && len(alternatives) < 3; offset++ {
+	// Try only 3 immediate alternatives to prevent hanging
+	for offset := 1; offset <= 3 && len(alternatives) < 3; offset++ {
 		testPort := originalPort + offset
 		if testPort <= 65535 && ps.isPortAvailable(testPort) {
 			alternatives = append(alternatives, testPort)
 		}
 	}
 	
-	// If we didn't find enough nearby, try some common alternatives
+	// If we didn't find enough nearby, add a few common alternatives without checking availability
+	// to prevent hanging - let the user choose
 	if len(alternatives) < 3 {
-		commonPorts := map[int][]int{
-			3000: {3001, 3002, 3003, 8000, 8080},
-			8000: {8001, 8002, 8080, 8888, 9000},
-			8080: {8081, 8082, 8088, 9080, 3000},
-			5000: {5001, 5002, 8000, 8080, 3000},
+		commonAlts := map[int][]int{
+			3000: {3001, 8000},
+			8000: {8001, 3000},
+			8080: {8081, 9080},
+			5000: {5001, 8000},
 		}
 		
-		if altPorts, exists := commonPorts[originalPort]; exists {
+		if altPorts, exists := commonAlts[originalPort]; exists {
 			for _, port := range altPorts {
 				if len(alternatives) >= 3 {
 					break
 				}
-				if ps.isPortAvailable(port) {
-					// Don't duplicate ports
-					duplicate := false
-					for _, existing := range alternatives {
-						if existing == port {
-							duplicate = true
-							break
-						}
-					}
-					if !duplicate {
-						alternatives = append(alternatives, port)
-					}
-				}
+				// Add without checking to prevent hanging - just suggest common alternatives
+				alternatives = append(alternatives, port)
 			}
 		}
 	}

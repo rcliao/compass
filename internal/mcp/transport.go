@@ -60,17 +60,21 @@ type MCPTransport struct {
 	lastActivity time.Time
 	connected    bool
 	mu           sync.Mutex
+	debugLogs    []string
+	debugLogsMu  sync.Mutex
 }
 
 // NewMCPTransport creates a new MCP transport over stdio
 func NewMCPTransport(server *MCPServer) *MCPTransport {
-	return &MCPTransport{
+	transport := &MCPTransport{
 		reader:       bufio.NewReader(os.Stdin),
 		writer:       os.Stdout,
 		server:       server,
 		lastActivity: time.Now(),
 		connected:    true,
+		debugLogs:    make([]string, 0, 1000),
 	}
+	return transport
 }
 
 // Start begins the MCP server transport loop
@@ -145,6 +149,7 @@ func (t *MCPTransport) Start() error {
 			}
 
 			// Process the JSON-RPC request
+			t.addDebugLog(fmt.Sprintf("Processing MCP request: %s", strings.TrimSpace(string(line))))
 			response := t.processRequest(line)
 			
 			// Send response if it's not a notification
@@ -825,8 +830,10 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 	}
 
 	// Call the Compass method
+	t.addDebugLog(fmt.Sprintf("Executing command: %s", commandName))
 	result, err := t.server.HandleCommand(commandName, argsJSON)
 	if err != nil {
+		t.addDebugLog(fmt.Sprintf("Command %s failed: %v", commandName, err))
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -835,6 +842,8 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 				Message: err.Error(),
 			},
 		}
+	} else {
+		t.addDebugLog(fmt.Sprintf("Command %s completed successfully", commandName))
 	}
 
 	// Return result in MCP tool call format
@@ -939,6 +948,12 @@ func (t *MCPTransport) handleResourcesList(req JSONRPCRequest) *JSONRPCResponse 
 			"description": "Recent logs from all active processes",
 			"mimeType":    "text/markdown",
 		},
+		{
+			"uri":         "compass://server/debug",
+			"name":        "MCP Server Debug Logs",
+			"description": "Recent debug logs from the compass MCP server itself",
+			"mimeType":    "text/plain",
+		},
 	}
 
 	return &JSONRPCResponse{
@@ -1022,6 +1037,10 @@ func (t *MCPTransport) handleResourceRead(req JSONRPCRequest) *JSONRPCResponse {
 	case "compass://processes/logs":
 		// Get recent logs from all processes - would need a special handler
 		result = "# Process Logs Summary\n\nCombined process logs not yet implemented.\nUse `compass.process.logs` with specific process ID to get logs for individual processes."
+		err = nil
+	case "compass://server/debug":
+		// Get recent debug logs from the MCP server itself
+		result = t.getServerDebugLogs()
 		err = nil
 	default:
 		return &JSONRPCResponse{
@@ -1228,4 +1247,40 @@ func (t *MCPTransport) sendNotification(method string, params interface{}) error
 	}
 
 	return nil
+}
+
+// addDebugLog adds a debug log entry with timestamp
+func (t *MCPTransport) addDebugLog(message string) {
+	t.debugLogsMu.Lock()
+	defer t.debugLogsMu.Unlock()
+	
+	// Add timestamp to message
+	timestamped := fmt.Sprintf("[%s] %s", time.Now().Format("2006-01-02 15:04:05.000"), message)
+	
+	// Keep only last 100 entries to prevent memory bloat
+	if len(t.debugLogs) >= 100 {
+		t.debugLogs = t.debugLogs[1:]
+	}
+	
+	t.debugLogs = append(t.debugLogs, timestamped)
+}
+
+// getServerDebugLogs returns recent debug logs as a string
+func (t *MCPTransport) getServerDebugLogs() string {
+	t.debugLogsMu.Lock()
+	defer t.debugLogsMu.Unlock()
+	
+	if len(t.debugLogs) == 0 {
+		return "No debug logs available. Logs are captured from standard Go log output.\n\nTo see more logs, check stderr output when running compass:\n./bin/compass 2> compass-debug.log"
+	}
+	
+	result := fmt.Sprintf("=== Compass MCP Server Debug Logs (Last %d entries) ===\n\n", len(t.debugLogs))
+	for _, logEntry := range t.debugLogs {
+		result += logEntry + "\n"
+	}
+	
+	result += "\n=== End Debug Logs ===\n"
+	result += "\nTip: To see real-time logs, redirect stderr when running compass:\n./bin/compass 2> compass-debug.log"
+	
+	return result
 }

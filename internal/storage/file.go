@@ -663,6 +663,30 @@ func (fs *FileStorage) GetProcess(processID string) (*domain.Process, error) {
 	return nil, fmt.Errorf("process with ID %s not found", processID)
 }
 
+// getProcessUnlocked is an internal version that doesn't acquire locks
+func (fs *FileStorage) getProcessUnlocked(processID string) (*domain.Process, error) {
+	// Search across all projects (assuming caller already holds lock)
+	projects, err := fs.listProjectsUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	
+	for _, project := range projects {
+		processes, err := fs.loadProcesses(project.ID)
+		if err != nil {
+			continue
+		}
+		
+		for _, process := range processes {
+			if process.ID == processID {
+				return process, nil
+			}
+		}
+	}
+	
+	return nil, fmt.Errorf("process with ID %s not found", processID)
+}
+
 func (fs *FileStorage) ListProcesses(filter domain.ProcessFilter) ([]*domain.Process, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
@@ -773,8 +797,8 @@ func (fs *FileStorage) SaveProcessLogs(logs []*domain.ProcessLog) error {
 	
 	// Save logs for each process
 	for processID, processLogs := range logsByProcess {
-		// Find the process to get the project ID
-		process, err := fs.GetProcess(processID)
+		// Find the process to get the project ID (use unlocked version to prevent deadlock)
+		process, err := fs.getProcessUnlocked(processID)
 		if err != nil {
 			continue
 		}
