@@ -298,6 +298,48 @@ echo '{"jsonrpc": "2.0", "method": "resources/list"}' | ./bin/compass | jq '.res
 echo '{"jsonrpc": "2.0", "method": "prompts/list"}' | ./bin/compass | jq '.result.prompts | length'  # Should be 5+
 ```
 
+## Git Workflow
+
+**CRITICAL: Always create a git commit after each meaningful chunk of changes**
+
+When working on compass development, follow this mandatory workflow:
+
+1. **Make changes** - Implement features, fix bugs, or make improvements
+2. **Test changes** - Build and verify functionality works correctly
+3. **Commit immediately** - Never leave changes uncommitted for extended periods
+
+### Commit Guidelines
+
+- **Commit frequency**: After every logical unit of work (feature, fix, refactor)
+- **Commit scope**: Each commit should represent a complete, working change
+- **Commit messages**: Follow the existing pattern with clear, descriptive messages
+- **Testing**: Always build and test before committing
+
+### Example Workflow
+
+```bash
+# 1. Make changes to code
+# 2. Build and test
+go build -o bin/compass cmd/compass/main.go
+
+# 3. Stage and commit changes
+git add [changed-files]
+git commit -m "descriptive commit message
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+# 4. Continue with next chunk of work
+```
+
+**Why this matters**:
+- Prevents loss of work
+- Maintains clear development history  
+- Enables easy rollback if issues arise
+- Facilitates code review and collaboration
+- Ensures incremental progress is preserved
+
 ## Dependencies
 
 Minimal external dependencies:
