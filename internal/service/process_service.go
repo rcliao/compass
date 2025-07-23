@@ -139,11 +139,14 @@ func (ps *ProcessService) Start(processID string) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	
-	// Get process from storage
-	process, err := ps.storage.GetProcess(processID)
+	// Get process from storage (handle partial IDs too)
+	process, err := ps.getProcessForOperation(processID)
 	if err != nil {
 		return fmt.Errorf("process not found: %w", err)
 	}
+	
+	// Use the full process ID for subsequent operations
+	processID = process.ID
 	
 	if !process.CanStart() {
 		return fmt.Errorf("process cannot be started in status: %s", process.Status)
@@ -276,9 +279,35 @@ func (ps *ProcessService) Stop(processID string) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	
+	// First check if process exists in storage (handle partial IDs too)
+	process, err := ps.getProcessForOperation(processID)
+	if err != nil {
+		return fmt.Errorf("process not found: %w", err)
+	}
+	
+	// Use the full process ID for subsequent operations
+	processID = process.ID
+	
+	// Check if process is currently running in memory
 	info, exists := ps.processes[processID]
 	if !exists {
-		return fmt.Errorf("process not running")
+		// Process is not currently running - check its status and handle gracefully
+		switch process.Status {
+		case domain.ProcessStatusStopped:
+			return nil // Already stopped - return success
+		case domain.ProcessStatusFailed, domain.ProcessStatusCrashed:
+			return nil // Already terminated - return success  
+		case domain.ProcessStatusPending:
+			return nil // Never started - return success
+		default:
+			// Process should be running but isn't in our map - mark as stopped
+			now := time.Now()
+			process.Status = domain.ProcessStatusStopped
+			process.StoppedAt = &now
+			process.UpdatedAt = now
+			ps.storage.SaveProcess(process.ProjectID, process)
+			return nil
+		}
 	}
 	
 	if !info.Process.CanStop() {
@@ -353,7 +382,60 @@ func (ps *ProcessService) List(filter domain.ProcessFilter) ([]*domain.Process, 
 
 // Get retrieves a specific process
 func (ps *ProcessService) Get(processID string) (*domain.Process, error) {
-	return ps.storage.GetProcess(processID)
+	// Try direct lookup first
+	process, err := ps.storage.GetProcess(processID)
+	if err == nil {
+		return process, nil
+	}
+	
+	// If not found and ID looks truncated (less than 36 chars), try partial match
+	if len(processID) < 36 {
+		return ps.getProcessByPartialID(processID)
+	}
+	
+	return nil, err
+}
+
+// getProcessForOperation gets process for operations like stop/start, handling partial IDs
+func (ps *ProcessService) getProcessForOperation(processID string) (*domain.Process, error) {
+	// Try direct lookup first
+	process, err := ps.storage.GetProcess(processID)
+	if err == nil {
+		return process, nil
+	}
+	
+	// If not found and ID looks truncated (less than 36 chars), try partial match
+	if len(processID) < 36 {
+		return ps.getProcessByPartialID(processID)
+	}
+	
+	return nil, err
+}
+
+// getProcessByPartialID finds a process by partial ID match
+func (ps *ProcessService) getProcessByPartialID(partialID string) (*domain.Process, error) {
+	// Get all processes and find matches
+	allProcesses, err := ps.storage.ListProcesses(domain.ProcessFilter{})
+	if err != nil {
+		return nil, err
+	}
+	
+	var matches []*domain.Process
+	for _, p := range allProcesses {
+		if strings.HasPrefix(p.ID, partialID) {
+			matches = append(matches, p)
+		}
+	}
+	
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no process found with ID starting with %s", partialID)
+	}
+	
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("multiple processes found with ID starting with %s (found %d matches)", partialID, len(matches))
+	}
+	
+	return matches[0], nil
 }
 
 // Update updates process configuration
