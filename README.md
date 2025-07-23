@@ -25,12 +25,28 @@ Traditional task management tools lack the context awareness needed for AI-assis
 
 ## Features
 
+### Core Features
 - **File-based Storage**: Persistent storage using `.compass/` directory structure
 - **MCP Protocol**: Standard Model Context Protocol for AI agent communication  
 - **Task Management**: Create, update, and track development tasks with context
 - **Project Organization**: Group tasks into projects with goals and descriptions
 - **Thread-safe Operations**: Concurrent access with proper synchronization
 - **Atomic File Operations**: Data integrity through atomic writes
+
+### Process Management
+- **Development Server Management**: Start, stop, and monitor web servers, APIs, and build tools
+- **Process Templates**: 15+ predefined templates for common development scenarios
+- **Port Conflict Detection**: Automatic detection with intelligent alternative suggestions
+- **Environment Variable Support**: Secure validation and management of environment variables
+- **Process Groups**: Coordinate multiple related services together
+- **Log Capture**: Real-time log capture with searchable history
+
+### Enhanced Developer Experience
+- **Quick Todo Creation**: Simplified `compass.todo.quick` for fast task creation
+- **Connection Recovery**: Robust error handling and automatic reconnection
+- **Enhanced Error Messages**: Descriptive errors with troubleshooting hints
+- **Command Validation**: Executable checks and working directory validation
+- **Template System**: Pre-configured setups for React, Node.js, Python, databases, and more
 
 ## Quick Start
 
@@ -172,6 +188,80 @@ compass.decision.record {
 compass.decision.list {}
 ```
 
+### Process Management
+
+```bash
+# Create a process using a template
+compass.process.create {
+  "name": "React Dev Server",
+  "template": "react-dev",
+  "workingDir": "/path/to/project"
+}
+
+# Or create a custom process
+compass.process.create {
+  "name": "Custom Server",
+  "command": "npm",
+  "args": ["run", "dev"],
+  "type": "web-server",
+  "port": 3000,
+  "environment": {
+    "NODE_ENV": "development"
+  }
+}
+
+# Start the process
+compass.process.start {"id": "<process-id>"}
+
+# Monitor logs
+compass.process.logs {"id": "<process-id>", "limit": 50}
+
+# Check status
+compass.process.status {"id": "<process-id>"}
+
+# Stop when done
+compass.process.stop {"id": "<process-id>"}
+```
+
+### Available Process Templates
+
+**Frontend Development:**
+- `react-dev` - React development server (port 3000)
+- `next-dev` - Next.js development server (port 3000)
+- `vite-dev` - Vite development server (port 5173)
+- `webpack-dev` - Webpack development server (port 8080)
+
+**Backend Development:**
+- `node-server` - Node.js server (port 8000)
+- `express-dev` - Express development server (port 3001)
+- `go-server` - Go server (port 8080)
+
+**Python Development:**
+- `python-server` - Python HTTP server (port 8000)
+- `flask-dev` - Flask development server (port 5000)
+- `django-dev` - Django development server (port 8000)
+
+**Databases:**
+- `postgres` - PostgreSQL server (port 5432)
+- `redis` - Redis server (port 6379)
+- `mysql` - MySQL server (port 3306)
+
+**Tools:**
+- `tailwind-watch` - Tailwind CSS watcher
+- `jest-watch` - Jest test runner in watch mode
+
+### Quick Todo Creation
+
+```bash
+# Simple todo creation without full 3 C's structure
+compass.todo.quick {
+  "title": "Fix login bug",
+  "description": "Users can't log in with email",
+  "priority": "high",
+  "labels": ["bug", "frontend"]
+}
+```
+
 ### Project Intelligence
 
 ```bash
@@ -292,6 +382,26 @@ go test -cover ./...
 - `compass.next` - Get next recommended task based on dependencies and priority
 - `compass.blockers` - Get all blocked tasks in current project
 
+### Process Commands
+- `compass.process.create` - Create a new process (supports templates)
+- `compass.process.start` - Start a process
+- `compass.process.stop` - Stop a process  
+- `compass.process.list` - List processes with filtering
+- `compass.process.get` - Get detailed process information
+- `compass.process.logs` - Retrieve process logs
+- `compass.process.status` - Get formatted process status and health
+- `compass.process.update` - Update process configuration
+- `compass.process.group.create` - Create a process group
+- `compass.process.group.start` - Start all processes in a group
+- `compass.process.group.stop` - Stop all processes in a group
+
+### TODO Commands
+- `compass.todo.create` - Create a TODO with full 3 C's structure
+- `compass.todo.quick` - Create a simple TODO (new!)
+- `compass.todo.complete` - Mark TODO as completed
+- `compass.todo.list` - List TODOs with filtering
+- `compass.todo.overdue` - Get overdue TODOs
+
 ### Planning Commands
 - `compass.planning.start` - Start a new planning session
 - `compass.planning.list` - List all planning sessions
@@ -369,7 +479,7 @@ compass.project.summary {}
 compass.planning.complete {"id":"<session-id>"}
 ```
 
-## Phase 2 Complete: Context System
+## Phase 4 Complete: Production Readiness & Process Management
 
 ### ✅ Completed Features
 
@@ -398,11 +508,19 @@ compass.planning.complete {"id":"<session-id>"}
 - ✅ Session-based task organization
 - ✅ Automated context updates from discoveries/decisions
 
-### Ready for Phase 4
-- Production readiness improvements
-- Enhanced error handling and logging
-- Performance optimizations
-- Advanced MCP integrations
+**Phase 4: Production Readiness & Process Management**
+- ✅ Comprehensive error handling with panic recovery
+- ✅ Connection recovery and health monitoring
+- ✅ Process management with 15+ development templates
+- ✅ Port conflict detection and resolution
+- ✅ Environment variable validation and security
+- ✅ Enhanced parameter validation with descriptive errors
+- ✅ Quick todo creation for improved developer experience
+- ✅ Command executable validation and path checking
+- ✅ Timeout handling and connection state management
+
+### System Status: Production Ready ✅
+The Compass MCP server is now production-ready with robust error handling, comprehensive process management, and enhanced developer experience features.
 
 ## License
 

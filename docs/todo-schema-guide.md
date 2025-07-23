@@ -1,6 +1,28 @@
-# TODO Schema Guide - The 3 C's Structure
+# TODO Schema Guide - The 3 C's Structure and Quick Creation
 
-Compass enforces a structured approach to TODO creation using the **3 C's**: Card, Context, and Criteria. This ensures every task has sufficient information for effective execution.
+Compass supports two approaches to TODO creation:
+
+1. **Full 3 C's Structure** (`compass.todo.create`) - Complete structured approach
+2. **Quick Creation** (`compass.todo.quick`) - Simplified for rapid task entry
+
+## Quick TODO Creation (Recommended for Fast Entry)
+
+For rapid task creation, use `compass.todo.quick`:
+
+```json
+{
+  "title": "Fix login bug",
+  "description": "Users can't log in with email addresses", 
+  "priority": "high",
+  "labels": ["bug", "authentication"]
+}
+```
+
+See the [Quick TODO Guide](todo-quick-guide.md) for complete details.
+
+## Full 3 C's Structure
+
+For complex tasks requiring detailed context, Compass enforces a structured approach using the **3 C's**: Card, Context, and Criteria. This ensures every task has sufficient information for effective execution.
 
 ## Schema Structure
 

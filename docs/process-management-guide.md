@@ -6,10 +6,13 @@ This guide explains how to use Compass MCP's process management capabilities to 
 
 The process management system allows coding agents to:
 - Start and stop processes with proper lifecycle management
-- Capture and retrieve process logs
-- Monitor process health and status
+- Use predefined templates for common development scenarios
+- Capture and retrieve process logs with real-time monitoring
+- Monitor process health and status with automatic recovery
 - Manage groups of related processes
 - Handle process crashes with automatic restart policies
+- Detect and resolve port conflicts automatically
+- Validate commands and environment variables securely
 
 ## Core Concepts
 
@@ -33,7 +36,26 @@ The process management system allows coding agents to:
 
 ## MCP Commands
 
-### Creating a Process
+### Creating a Process with Templates
+
+Using predefined templates (recommended):
+
+```json
+compass.process.create {
+  "name": "React Dev Server",
+  "template": "react-dev",
+  "workingDir": "/path/to/project"
+}
+```
+
+Available templates:
+- **Frontend**: `react-dev`, `next-dev`, `vite-dev`, `webpack-dev`
+- **Backend**: `node-server`, `express-dev`, `go-server`
+- **Python**: `python-server`, `flask-dev`, `django-dev`
+- **Databases**: `postgres`, `redis`, `mysql`
+- **Tools**: `tailwind-watch`, `jest-watch`
+
+### Creating a Custom Process
 
 ```json
 compass.process.create {
@@ -48,6 +70,12 @@ compass.process.create {
   }
 }
 ```
+
+**Enhanced Features:**
+- **Command Validation**: Automatically checks if commands are executable
+- **Port Conflict Detection**: Suggests alternative ports if specified port is in use
+- **Environment Variable Validation**: Validates variable names and warns about sensitive data
+- **Working Directory Validation**: Ensures specified directories exist
 
 **Working Directory Behavior:**
 - If `workingDir` is specified: Uses that directory
@@ -261,20 +289,44 @@ stop_process(process.id)
 ## Troubleshooting
 
 ### Process Won't Start
-- Check the command and arguments are correct
-- Verify the working directory exists
-- Ensure required environment variables are set
-- Check file permissions
+
+**Command Not Found:**
+- Error: `command not found or not executable`
+- Solution: Ensure the command exists in PATH or use absolute path
+- The system automatically validates executable availability
+
+**Working Directory Issues:**
+- Error: `working directory does not exist`
+- Solution: Verify the path exists and is accessible
+- Use relative paths from your project directory
+
+**Port Conflicts:**
+- Error: `port 3000 is already in use. Suggested alternatives: [3001, 3002, 3003]`
+- Solution: Use one of the suggested ports or stop the conflicting process
+- The system automatically detects conflicts and suggests alternatives
+
+**Environment Variable Issues:**
+- Error: `invalid character in environment variable name`
+- Solution: Use only letters, numbers, and underscores in variable names
+- Variable names cannot start with digits
 
 ### Process Crashes Immediately
-- Review logs for error messages
-- Check if the port is already in use
-- Verify all dependencies are installed
+- Review logs for error messages: `compass.process.logs {"id": "process-id"}`
+- Check if dependencies are installed (npm install, pip install, etc.)
+- Verify template compatibility with your project structure
+
+### Connection Issues
+The system now includes robust error recovery:
+- Automatic panic recovery prevents server crashes
+- Connection timeouts are handled gracefully
+- Broken pipe errors are detected and managed
+- Transport layer includes connection health monitoring
 
 ### Can't Stop Process
 - Process may have already terminated
-- Check process status first
-- Force kill will be attempted if graceful shutdown fails
+- Check process status first: `compass.process.status {"id": "process-id"}`
+- System attempts graceful shutdown (SIGTERM) before force kill (SIGKILL)
+- Improved cleanup ensures proper resource deallocation
 
 ## Future Enhancements
 
