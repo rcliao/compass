@@ -489,13 +489,46 @@ func (t *MCPTransport) handleToolsList(req JSONRPCRequest) *JSONRPCResponse {
 		},
 		{
 			"name":        "compass_todo_complete",
-			"description": "Mark TODO as completed",
+			"description": "Mark TODO as completed with required verification evidence",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"id": map[string]interface{}{"type": "string", "description": "TODO ID"},
+					"evidence": map[string]interface{}{
+						"type":        "array",
+						"minItems":    1,
+						"description": "Verification evidence (minimum 1 per acceptance criteria)",
+						"items": map[string]interface{}{
+							"type": "object",
+							"required": []string{"evidence"},
+							"properties": map[string]interface{}{
+								"evidence": map[string]interface{}{
+									"type":        "string",
+									"minLength":   10,
+									"description": "What was tested/verified (memo notes)",
+								},
+								"testType": map[string]interface{}{
+									"type":        "string",
+									"description": "Type of test performed (e.g., manual, automated, integration)",
+								},
+								"testResults": map[string]interface{}{
+									"type":        "string",
+									"description": "Results or output from the test",
+								},
+								"relatedCriteria": map[string]interface{}{
+									"type":        "array",
+									"items":       map[string]interface{}{"type": "integer"},
+									"description": "Acceptance criteria indices this evidence addresses",
+								},
+							},
+						},
+					},
+					"completionNotes": map[string]interface{}{
+						"type":        "string",
+						"description": "Overall completion summary and notes",
+					},
 				},
-				"required": []string{"id"},
+				"required": []string{"id", "evidence"},
 			},
 		},
 		{

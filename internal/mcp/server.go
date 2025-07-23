@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/rcliao/compass/internal/domain"
@@ -1257,26 +1259,103 @@ type TodoIDParams struct {
 	ID string `json:"id"`
 }
 
+type VerificationEvidenceInput struct {
+	Evidence        string `json:"evidence"`
+	TestType        string `json:"testType,omitempty"`
+	TestResults     string `json:"testResults,omitempty"`
+	RelatedCriteria []int  `json:"relatedCriteria,omitempty"`
+}
+
+type CompleteTodoParams struct {
+	ID              string                      `json:"id"`
+	Evidence        []VerificationEvidenceInput `json:"evidence"`
+	CompletionNotes string                     `json:"completionNotes,omitempty"`
+}
+
 func (s *MCPServer) handleTodoComplete(params json.RawMessage) (interface{}, error) {
-	var p TodoIDParams
+	var p CompleteTodoParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
+	// Get the task
 	todo, err := s.taskService.Get(p.ID)
 	if err != nil {
 		return nil, err
 	}
 	
-	todo.Complete()
+	// Convert input evidence to domain evidence with audit trail
+	evidence := make([]domain.VerificationEvidence, len(p.Evidence))
+	for i, e := range p.Evidence {
+		evidence[i] = domain.VerificationEvidence{
+			Evidence:        e.Evidence,
+			TestedAt:        time.Now(),
+			TestType:        e.TestType,
+			TestResults:     e.TestResults,
+			RelatedCriteria: e.RelatedCriteria,
+			CommitHash:      s.getCurrentCommitHash(),
+			FilesAffected:   s.getCurrentWorkingFiles(),
+		}
+	}
 	
+	// Complete with verification
+	if err := todo.CompleteWithVerification(evidence, "compass-agent", p.CompletionNotes); err != nil {
+		return nil, fmt.Errorf("failed to complete task with verification: %w", err)
+	}
+	
+	// Update the task in storage
 	updates := map[string]interface{}{
-		"status":      todo.Card.Status,
-		"completedAt": todo.Card.CompletedAt,
-		"updatedAt":   todo.Card.UpdatedAt,
+		"status":       todo.Card.Status,
+		"completedAt":  todo.Card.CompletedAt,
+		"updatedAt":    todo.Card.UpdatedAt,
+		"verification": todo.Card.Verification,
 	}
 	
 	return s.taskService.Update(p.ID, updates)
+}
+
+// Helper methods for audit trail capture
+func (s *MCPServer) getCurrentCommitHash() string {
+	// Try to get current git commit hash
+	if output, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+		return strings.TrimSpace(string(output))
+	}
+	return ""
+}
+
+func (s *MCPServer) getCurrentWorkingFiles() []string {
+	// Get list of modified/staged files in current directory
+	var files []string
+	
+	// Get modified files
+	if output, err := exec.Command("git", "diff", "--name-only").Output(); err == nil {
+		for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			if file != "" {
+				files = append(files, file)
+			}
+		}
+	}
+	
+	// Get staged files
+	if output, err := exec.Command("git", "diff", "--cached", "--name-only").Output(); err == nil {
+		for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			if file != "" {
+				// Avoid duplicates
+				found := false
+				for _, existing := range files {
+					if existing == file {
+						found = true
+						break
+					}
+				}
+				if !found {
+					files = append(files, file)
+				}
+			}
+		}
+	}
+	
+	return files
 }
 
 func (s *MCPServer) handleTodoReopen(params json.RawMessage) (interface{}, error) {

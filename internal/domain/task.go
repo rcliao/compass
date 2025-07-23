@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,6 +58,7 @@ type Card struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	Verification *CompletionVerification `json:"verification,omitempty"`
 }
 
 type Context struct {
@@ -74,6 +76,24 @@ type Criteria struct {
 	Acceptance    []string `json:"acceptance"`
 	Verification  []string `json:"verification"`
 	TestScenarios []string `json:"testScenarios,omitempty"`
+}
+
+type VerificationEvidence struct {
+	ID              string    `json:"id"`
+	Evidence        string    `json:"evidence"`                    // Agent's memo notes on what was tested
+	TestedAt        time.Time `json:"testedAt"`                   // When verification occurred
+	CommitHash      string    `json:"commitHash,omitempty"`       // Git state during test
+	TestType        string    `json:"testType,omitempty"`         // Type of test performed
+	TestResults     string    `json:"testResults,omitempty"`      // Detailed results or output
+	FilesAffected   []string  `json:"filesAffected,omitempty"`    // Files tested/modified
+	RelatedCriteria []int     `json:"relatedCriteria,omitempty"`  // Loose mapping to acceptance criteria indices
+}
+
+type CompletionVerification struct {
+	CompletedBy     string                 `json:"completedBy,omitempty"`
+	CompletedAt     time.Time             `json:"completedAt"`
+	Evidence        []VerificationEvidence `json:"evidence"`
+	CompletionNotes string                `json:"completionNotes,omitempty"`
 }
 
 func NewTask(projectID, title, description string) *Task {
@@ -155,12 +175,50 @@ func (t *Task) DaysUntilDue() *int {
 	return &days
 }
 
-// Complete marks the task as completed and sets completion time
+// Complete marks the task as completed and sets completion time (legacy method)
 func (t *Task) Complete() {
 	t.Card.Status = StatusCompleted
 	now := time.Now()
 	t.Card.CompletedAt = &now
 	t.Card.UpdatedAt = now
+}
+
+// CompleteWithVerification marks the task as completed with verification evidence
+func (t *Task) CompleteWithVerification(evidence []VerificationEvidence, completedBy, completionNotes string) error {
+	// Validate that we have at least one evidence per acceptance criteria
+	if len(evidence) == 0 {
+		return fmt.Errorf("verification evidence is required for task completion")
+	}
+	
+	if len(t.Criteria.Acceptance) > 0 && len(evidence) < len(t.Criteria.Acceptance) {
+		return fmt.Errorf("insufficient verification evidence: need at least %d evidence items for %d acceptance criteria", len(t.Criteria.Acceptance), len(t.Criteria.Acceptance))
+	}
+	
+	// Assign UUIDs to evidence items if not provided
+	for i := range evidence {
+		if evidence[i].ID == "" {
+			evidence[i].ID = uuid.New().String()
+		}
+		if evidence[i].TestedAt.IsZero() {
+			evidence[i].TestedAt = time.Now()
+		}
+	}
+	
+	// Mark task as completed
+	t.Card.Status = StatusCompleted
+	now := time.Now()
+	t.Card.CompletedAt = &now
+	t.Card.UpdatedAt = now
+	
+	// Store verification data
+	t.Card.Verification = &CompletionVerification{
+		CompletedBy:     completedBy,
+		CompletedAt:     now,
+		Evidence:        evidence,
+		CompletionNotes: completionNotes,
+	}
+	
+	return nil
 }
 
 // Reopen reopens a completed task
