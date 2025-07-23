@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -79,9 +82,41 @@ func (ps *ProcessService) Create(process *domain.Process) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	
+	// Validate command
+	if process.Command == "" {
+		return fmt.Errorf("command cannot be empty")
+	}
+	
 	// Set defaults - use the directory where MCP server was started (user's project dir)
 	if process.WorkingDir == "" {
 		process.WorkingDir = ps.defaultWorkingDir
+	}
+	
+	// Validate working directory exists
+	if info, err := os.Stat(process.WorkingDir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("working directory does not exist: %s", process.WorkingDir)
+		}
+		return fmt.Errorf("failed to check working directory: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("working directory is not a directory: %s", process.WorkingDir)
+	}
+	
+	// Check if command is executable
+	if !ps.isCommandExecutable(process.Command, process.WorkingDir) {
+		return fmt.Errorf("command not found or not executable: %s. Make sure the command is in PATH or use an absolute path", process.Command)
+	}
+	
+	// Validate environment variables
+	if err := ps.validateEnvironmentVariables(process.Environment); err != nil {
+		return fmt.Errorf("invalid environment variables: %w", err)
+	}
+	
+	// Check for port conflicts if port is specified
+	if process.Port > 0 {
+		if err := ps.checkPortAvailable(process.Port); err != nil {
+			return fmt.Errorf("port conflict: %w", err)
+		}
 	}
 	
 	// Save to storage
@@ -112,6 +147,11 @@ func (ps *ProcessService) Start(processID string) error {
 	
 	if !process.CanStart() {
 		return fmt.Errorf("process cannot be started in status: %s", process.Status)
+	}
+	
+	// Validate working directory still exists
+	if _, err := os.Stat(process.WorkingDir); err != nil {
+		return fmt.Errorf("working directory no longer exists: %s", process.WorkingDir)
 	}
 	
 	// Create command with context
@@ -149,6 +189,9 @@ func (ps *ProcessService) Start(processID string) error {
 	
 	// Start the process
 	if err := cmd.Start(); err != nil {
+		// Clean up pipes on error
+		stdout.Close()
+		stderr.Close()
 		process.Status = domain.ProcessStatusFailed
 		ps.storage.SaveProcess(process.ProjectID, process)
 		return fmt.Errorf("failed to start process: %w", err)
@@ -175,6 +218,16 @@ func (ps *ProcessService) Start(processID string) error {
 	
 	// Monitor process completion
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("ProcessService: Panic in process monitor for %s: %v", processID[:8], r)
+				// Ensure cleanup happens even after panic
+				ps.mu.Lock()
+				delete(ps.processes, processID)
+				ps.mu.Unlock()
+			}
+		}()
+		
 		err := cmd.Wait()
 		done <- err
 		
@@ -380,22 +433,31 @@ func (ps *ProcessService) StopGroup(groupID string) error {
 
 // captureOutput captures process output to logs
 func (ps *ProcessService) captureOutput(processID string, pipe io.Reader, logType domain.LogType) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ProcessService: Panic in captureOutput for process %s: %v", processID[:8], r)
+		}
+	}()
+	
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
 		line := scanner.Text()
 		ps.addLog(processID, logType, line)
 	}
+	
+	if err := scanner.Err(); err != nil {
+		log.Printf("ProcessService: Error reading %s for process %s: %v", logType, processID[:8], err)
+	}
 }
 
 // addLog adds a log entry (thread-safe - acquires ps.mu lock)
 func (ps *ProcessService) addLog(processID string, logType domain.LogType, message string) {
-	ps.mu.RLock()
+	ps.mu.Lock()
 	buffer, exists := ps.logBuffers[processID]
-	ps.mu.RUnlock()
-	
 	if exists {
 		ps.addLogUnsafe(buffer, processID, logType, message)
 	}
+	ps.mu.Unlock()
 }
 
 // addLogUnsafe adds a log entry without acquiring ps.mu (for use within methods that already hold the lock)
@@ -420,6 +482,14 @@ func (ps *ProcessService) addLogUnsafe(buffer *LogBuffer, processID string, logT
 
 // healthCheckLoop monitors process health
 func (ps *ProcessService) healthCheckLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ProcessService: Panic in healthCheckLoop: %v", r)
+			// Restart the health check loop after a panic
+			go ps.healthCheckLoop()
+		}
+	}()
+	
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	
@@ -475,27 +545,254 @@ func (ps *ProcessService) handleRestart(process *domain.Process) {
 		return
 	}
 	
+	// Copy necessary data to avoid race conditions
+	processID := process.ID
+	retryCount := process.RestartPolicy.RetryCount + 1
+	maxRetries := process.RestartPolicy.MaxRetries
+	
 	// Schedule restart after delay
 	time.AfterFunc(process.RestartPolicy.RetryDelay, func() {
-		process.RestartPolicy.RetryCount++
-		now := time.Now()
-		process.RestartPolicy.LastRestart = &now
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("ProcessService: Panic in restart handler for %s: %v", processID[:8], r)
+			}
+		}()
 		
-		ps.addLog(process.ID, domain.LogTypeSystem, 
-			fmt.Sprintf("Restarting process (attempt %d/%d)", 
-				process.RestartPolicy.RetryCount, process.RestartPolicy.MaxRetries))
+		// Update restart policy atomically
+		ps.mu.Lock()
+		if p, err := ps.storage.GetProcess(processID); err == nil && p != nil {
+			p.RestartPolicy.RetryCount = retryCount
+			now := time.Now()
+			p.RestartPolicy.LastRestart = &now
+			ps.storage.SaveProcess(p.ProjectID, p)
+		}
+		ps.mu.Unlock()
 		
-		if err := ps.Start(process.ID); err != nil {
-			ps.addLog(process.ID, domain.LogTypeSystem, 
+		ps.addLog(processID, domain.LogTypeSystem, 
+			fmt.Sprintf("Restarting process (attempt %d/%d)", retryCount, maxRetries))
+		
+		if err := ps.Start(processID); err != nil {
+			ps.addLog(processID, domain.LogTypeSystem, 
 				fmt.Sprintf("Restart failed: %v", err))
 		}
 	})
 }
 
-// loadProcesses loads process state from storage on startup
+// loadProcesses loads process state from storage on startup and reconciles with system state
 func (ps *ProcessService) loadProcesses() {
-	// This would reload any processes that should be running
-	// For now, we'll keep it simple and not auto-restart on service startup
+	log.Printf("ProcessService: Loading and reconciling process state...")
+	
+	// Get all processes from storage
+	processes, err := ps.storage.ListProcesses(domain.ProcessFilter{})
+	if err != nil {
+		log.Printf("ProcessService: Failed to load processes from storage: %v", err)
+		return
+	}
+	
+	log.Printf("ProcessService: Found %d stored processes", len(processes))
+	
+	staleProceses := 0
+	reconciledProcesses := 0
+	
+	for _, process := range processes {
+		// Check if process was marked as running
+		if process.Status == domain.ProcessStatusRunning {
+			// Verify if the process is actually still running
+			if ps.isProcessRunning(process) {
+				log.Printf("ProcessService: Process %s (PID %d) is still running, will reconnect", 
+					process.ID[:8], process.PID)
+				// TODO: In a future enhancement, we could reconnect to running processes
+				// For now, we'll mark them as stopped since we can't manage them
+				ps.markProcessAsStopped(process)
+				reconciledProcesses++
+			} else {
+				log.Printf("ProcessService: Process %s was marked running but is not active, marking as stopped", 
+					process.ID[:8])
+				ps.markProcessAsStopped(process)
+				staleProceses++
+			}
+		}
+	}
+	
+	log.Printf("ProcessService: Reconciliation complete - %d stale processes updated, %d processes reconciled", 
+		staleProceses, reconciledProcesses)
+}
+
+// isProcessRunning checks if a process is actually running on the system
+func (ps *ProcessService) isProcessRunning(process *domain.Process) bool {
+	if process.PID == 0 {
+		return false
+	}
+	
+	// Try to send signal 0 to check if process exists
+	// Signal 0 doesn't actually send a signal but checks if we can send to the process
+	err := syscall.Kill(process.PID, 0)
+	return err == nil
+}
+
+// markProcessAsStopped updates a process status to stopped
+func (ps *ProcessService) markProcessAsStopped(process *domain.Process) {
+	now := time.Now()
+	process.Status = domain.ProcessStatusStopped
+	process.StoppedAt = &now
+	process.UpdatedAt = now
+	
+	// Save updated status to storage
+	if err := ps.storage.SaveProcess(process.ProjectID, process); err != nil {
+		log.Printf("ProcessService: Failed to update process %s status: %v", process.ID[:8], err)
+	}
+}
+
+// isCommandExecutable checks if a command can be executed
+func (ps *ProcessService) isCommandExecutable(command, workingDir string) bool {
+	// Check if it's an absolute path
+	if filepath.IsAbs(command) {
+		info, err := os.Stat(command)
+		if err != nil {
+			return false
+		}
+		return info.Mode()&0111 != 0 // Check if executable
+	}
+	
+	// Check if command exists in working directory
+	localPath := filepath.Join(workingDir, command)
+	if info, err := os.Stat(localPath); err == nil {
+		return info.Mode()&0111 != 0
+	}
+	
+	// Check if command exists in PATH
+	_, err := exec.LookPath(command)
+	return err == nil
+}
+
+// validateEnvironmentVariables validates environment variable names and values
+func (ps *ProcessService) validateEnvironmentVariables(env map[string]string) error {
+	for key, value := range env {
+		// Check key format (must be valid environment variable name)
+		if key == "" {
+			return fmt.Errorf("environment variable name cannot be empty")
+		}
+		
+		// Check for invalid characters in key
+		for _, c := range key {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+				return fmt.Errorf("invalid character in environment variable name '%s': only letters, numbers, and underscores are allowed", key)
+			}
+		}
+		
+		// Check if key starts with a digit
+		if key[0] >= '0' && key[0] <= '9' {
+			return fmt.Errorf("environment variable name '%s' cannot start with a digit", key)
+		}
+		
+		// Warn about potentially sensitive variables (don't block them, just warn)
+		if ps.isSensitiveEnvVar(key) {
+			log.Printf("ProcessService: Warning - setting potentially sensitive environment variable: %s", key)
+		}
+		
+		// Check value length (reasonable limit)
+		if len(value) > 32768 { // 32KB limit
+			return fmt.Errorf("environment variable '%s' value too long (max 32KB)", key)
+		}
+	}
+	return nil
+}
+
+// isSensitiveEnvVar checks if an environment variable might contain sensitive information
+func (ps *ProcessService) isSensitiveEnvVar(key string) bool {
+	sensitive := []string{
+		"PASSWORD", "PASSWD", "SECRET", "KEY", "TOKEN", "API_KEY", "AUTH", 
+		"CREDENTIAL", "PRIVATE", "CERT", "CERTIFICATE", "DB_PASSWORD",
+	}
+	
+	upperKey := strings.ToUpper(key)
+	for _, s := range sensitive {
+		if strings.Contains(upperKey, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkPortAvailable checks if a port is available for use
+func (ps *ProcessService) checkPortAvailable(port int) error {
+	// Check if port is already used by another managed process
+	ps.mu.RLock()
+	for _, info := range ps.processes {
+		if info.Process.Port == port && (info.Process.Status == domain.ProcessStatusRunning || 
+			info.Process.Status == domain.ProcessStatusStarting) {
+			ps.mu.RUnlock()
+			return fmt.Errorf("port %d is already in use by process '%s' (ID: %s)", 
+				port, info.Process.Name, info.Process.ID[:8])
+		}
+	}
+	ps.mu.RUnlock()
+	
+	// Check if port is available on the system
+	if !ps.isPortAvailable(port) {
+		// Suggest alternative ports
+		alternatives := ps.suggestAlternativePorts(port)
+		return fmt.Errorf("port %d is already in use by another process. Suggested alternatives: %v", 
+			port, alternatives)
+	}
+	
+	return nil
+}
+
+// isPortAvailable checks if a port is available on the system
+func (ps *ProcessService) isPortAvailable(port int) bool {
+	conn, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// suggestAlternativePorts suggests alternative ports when there's a conflict
+func (ps *ProcessService) suggestAlternativePorts(originalPort int) []int {
+	alternatives := []int{}
+	
+	// Try ports near the original
+	for offset := 1; offset <= 10 && len(alternatives) < 3; offset++ {
+		testPort := originalPort + offset
+		if testPort <= 65535 && ps.isPortAvailable(testPort) {
+			alternatives = append(alternatives, testPort)
+		}
+	}
+	
+	// If we didn't find enough nearby, try some common alternatives
+	if len(alternatives) < 3 {
+		commonPorts := map[int][]int{
+			3000: {3001, 3002, 3003, 8000, 8080},
+			8000: {8001, 8002, 8080, 8888, 9000},
+			8080: {8081, 8082, 8088, 9080, 3000},
+			5000: {5001, 5002, 8000, 8080, 3000},
+		}
+		
+		if altPorts, exists := commonPorts[originalPort]; exists {
+			for _, port := range altPorts {
+				if len(alternatives) >= 3 {
+					break
+				}
+				if ps.isPortAvailable(port) {
+					// Don't duplicate ports
+					duplicate := false
+					for _, existing := range alternatives {
+						if existing == port {
+							duplicate = true
+							break
+						}
+					}
+					if !duplicate {
+						alternatives = append(alternatives, port)
+					}
+				}
+			}
+		}
+	}
+	
+	return alternatives
 }
 
 // Shutdown gracefully shuts down the process service
@@ -503,15 +800,21 @@ func (ps *ProcessService) Shutdown() {
 	log.Printf("ProcessService: Starting shutdown...")
 	ps.cancel()
 	
-	// Stop all running processes
+	// Collect process IDs to stop (to avoid deadlock)
 	ps.mu.Lock()
-	processCount := len(ps.processes)
-	log.Printf("ProcessService: Found %d processes to stop", processCount)
+	processIDs := make([]string, 0, len(ps.processes))
 	for id := range ps.processes {
+		processIDs = append(processIDs, id)
+	}
+	processCount := len(processIDs)
+	ps.mu.Unlock()
+	
+	// Stop all running processes (without holding the lock)
+	log.Printf("ProcessService: Found %d processes to stop", processCount)
+	for _, id := range processIDs {
 		log.Printf("ProcessService: Stopping process %s", id)
 		ps.Stop(id)
 	}
-	ps.mu.Unlock()
 	
 	// Wait for all processes to stop
 	timeout := time.After(30 * time.Second)

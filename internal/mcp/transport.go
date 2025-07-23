@@ -2,10 +2,15 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
+	"strings"
+	"sync"
+	"time"
 )
 
 // JSONRPCRequest represents a JSON-RPC 2.0 request
@@ -49,40 +54,122 @@ const (
 
 // MCPTransport handles JSON-RPC 2.0 communication over stdio
 type MCPTransport struct {
-	reader *bufio.Reader
-	writer io.Writer
-	server *MCPServer
+	reader       *bufio.Reader
+	writer       io.Writer
+	server       *MCPServer
+	lastActivity time.Time
+	connected    bool
+	mu           sync.Mutex
 }
 
 // NewMCPTransport creates a new MCP transport over stdio
 func NewMCPTransport(server *MCPServer) *MCPTransport {
 	return &MCPTransport{
-		reader: bufio.NewReader(os.Stdin),
-		writer: os.Stdout,
-		server: server,
+		reader:       bufio.NewReader(os.Stdin),
+		writer:       os.Stdout,
+		server:       server,
+		lastActivity: time.Now(),
+		connected:    true,
 	}
 }
 
 // Start begins the MCP server transport loop
 func (t *MCPTransport) Start() error {
 	for {
-		// Read line from stdin
-		line, err := t.reader.ReadBytes('\n')
+		// Wrap each request processing in panic recovery
+		err := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("MCP transport: Panic recovered: %v", r)
+					// Try to send error response to client
+					errorResp := &JSONRPCResponse{
+						JSONRPC: "2.0",
+						Error: &JSONRPCError{
+							Code:    InternalError,
+							Message: "Internal server error",
+						},
+					}
+					t.sendResponse(errorResp)
+					err = fmt.Errorf("panic recovered: %v", r)
+				}
+			}()
+			
+			// Read line from stdin (with timeout)
+			lineChan := make(chan []byte, 1)
+			errChan := make(chan error, 1)
+			
+			go func() {
+				line, err := t.reader.ReadBytes('\n')
+				if err != nil {
+					errChan <- err
+				} else {
+					lineChan <- line
+				}
+			}()
+			
+			// Wait for input or timeout
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			
+			var line []byte
+			select {
+			case line = <-lineChan:
+				t.updateActivity()
+			case err := <-errChan:
+				if err == io.EOF {
+					log.Println("MCP transport: client disconnected")
+					return io.EOF // Normal termination
+				}
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			case <-ctx.Done():
+				// Check if we should timeout or continue waiting
+				if t.shouldTimeout() {
+					log.Println("MCP transport: connection timeout")
+					return fmt.Errorf("connection timeout")
+				}
+				// Continue waiting for long-running processes
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				select {
+				case line = <-lineChan:
+					t.updateActivity()
+				case err := <-errChan:
+					if err == io.EOF {
+						return io.EOF
+					}
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				case <-ctx.Done():
+					return fmt.Errorf("connection timeout after extended wait")
+				}
+			}
+
+			// Process the JSON-RPC request
+			response := t.processRequest(line)
+			
+			// Send response if it's not a notification
+			if response != nil {
+				if err := t.sendResponse(response); err != nil {
+					// Check for broken pipe
+					if strings.Contains(err.Error(), "broken pipe") || 
+					   strings.Contains(err.Error(), "connection reset") {
+						log.Printf("MCP transport: Client disconnected: %v", err)
+						return io.EOF
+					}
+					return fmt.Errorf("failed to send response: %w", err)
+				}
+			}
+			
+			return nil
+		}()
+		
+		// Handle errors from the request processing
 		if err != nil {
 			if err == io.EOF {
-				return nil // Normal termination
+				return nil // Clean disconnect
 			}
-			return fmt.Errorf("failed to read from stdin: %w", err)
-		}
-
-		// Process the JSON-RPC request
-		response := t.processRequest(line)
-		
-		// Send response if it's not a notification
-		if response != nil {
-			if err := t.sendResponse(response); err != nil {
-				return fmt.Errorf("failed to send response: %w", err)
-			}
+			// Log error but continue processing
+			log.Printf("MCP transport: Error processing request: %v", err)
 		}
 	}
 }
@@ -195,8 +282,38 @@ func (t *MCPTransport) handleInitialize(req JSONRPCRequest) *JSONRPCResponse {
 	}
 }
 
+// updateActivity updates the last activity timestamp
+func (t *MCPTransport) updateActivity() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastActivity = time.Now()
+}
+
+// shouldTimeout checks if the connection should timeout based on inactivity
+func (t *MCPTransport) shouldTimeout() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Don't timeout if we've had recent activity
+	return time.Since(t.lastActivity) > 10*time.Minute
+}
+
+// isConnected checks if the transport is still connected
+func (t *MCPTransport) isConnected() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.connected
+}
+
+// setConnected sets the connection status
+func (t *MCPTransport) setConnected(connected bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.connected = connected
+}
+
 // handleShutdown handles the MCP shutdown request
 func (t *MCPTransport) handleShutdown(req JSONRPCRequest) *JSONRPCResponse {
+	t.setConnected(false)
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,

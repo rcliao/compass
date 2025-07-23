@@ -136,6 +136,8 @@ func (s *MCPServer) HandleCommand(method string, params json.RawMessage) (interf
 	// TODO commands
 	case "compass.todo.create":
 		return s.handleTodoCreate(params)
+	case "compass.todo.quick":
+		return s.handleTodoQuickCreate(params)
 	case "compass.todo.complete":
 		return s.handleTodoComplete(params)
 	case "compass.todo.reopen":
@@ -668,12 +670,28 @@ type CreateProcessParams struct {
 	Environment map[string]string `json:"environment,omitempty"`
 	Type        domain.ProcessType `json:"type,omitempty"`
 	Port        int               `json:"port,omitempty"`
+	Template    string            `json:"template,omitempty"`
 }
 
 func (s *MCPServer) handleProcessCreate(params json.RawMessage) (interface{}, error) {
 	var p CreateProcessParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Handle template processing
+	if p.Template != "" {
+		if err := s.applyProcessTemplate(&p); err != nil {
+			return nil, fmt.Errorf("failed to apply template: %w", err)
+		}
+	}
+	
+	// Validate required parameters
+	if p.Name == "" {
+		return nil, fmt.Errorf("process name is required")
+	}
+	if p.Command == "" {
+		return nil, fmt.Errorf("command is required")
 	}
 	
 	// Use current project if not specified
@@ -696,9 +714,31 @@ func (s *MCPServer) handleProcessCreate(params json.RawMessage) (interface{}, er
 		process.Environment = p.Environment
 	}
 	if p.Type != "" {
+		// Validate process type
+		validTypes := []domain.ProcessType{
+			domain.ProcessTypeWebServer, domain.ProcessTypeAPIServer, domain.ProcessTypeBuildTool,
+			domain.ProcessTypeWatcher, domain.ProcessTypeTest, domain.ProcessTypeDatabase, domain.ProcessTypeCustom,
+		}
+		isValid := false
+		for _, t := range validTypes {
+			if p.Type == t {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			validTypeStrings := make([]string, len(validTypes))
+			for i, t := range validTypes {
+				validTypeStrings[i] = string(t)
+			}
+			return nil, fmt.Errorf("invalid process type: %s. Must be one of: %v", p.Type, validTypeStrings)
+		}
 		process.Type = p.Type
 	}
 	if p.Port > 0 {
+		if p.Port > 65535 {
+			return nil, fmt.Errorf("invalid port number: %d. Must be between 1 and 65535", p.Port)
+		}
 		process.Port = p.Port
 	}
 	
@@ -707,6 +747,126 @@ func (s *MCPServer) handleProcessCreate(params json.RawMessage) (interface{}, er
 	}
 	
 	return process, nil
+}
+
+// applyProcessTemplate applies a predefined template to process parameters
+func (s *MCPServer) applyProcessTemplate(params *CreateProcessParams) error {
+	templates := map[string]func(*CreateProcessParams){
+		"react-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npm" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "dev"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWebServer }
+			if p.Port == 0 { p.Port = 3000 }
+			if p.Name == "" { p.Name = "React Development Server" }
+		},
+		"next-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npm" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "dev"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWebServer }
+			if p.Port == 0 { p.Port = 3000 }
+			if p.Name == "" { p.Name = "Next.js Development Server" }
+		},
+		"vite-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npm" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "dev"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWebServer }
+			if p.Port == 0 { p.Port = 5173 }
+			if p.Name == "" { p.Name = "Vite Development Server" }
+		},
+		"node-server": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "node" }
+			if len(p.Args) == 0 { p.Args = []string{"server.js"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeAPIServer }
+			if p.Port == 0 { p.Port = 8000 }
+			if p.Name == "" { p.Name = "Node.js Server" }
+		},
+		"express-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npm" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "dev"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeAPIServer }
+			if p.Port == 0 { p.Port = 3001 }
+			if p.Name == "" { p.Name = "Express Development Server" }
+		},
+		"python-server": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "python" }
+			if len(p.Args) == 0 { p.Args = []string{"-m", "http.server"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWebServer }
+			if p.Port == 0 { p.Port = 8000 }
+			if p.Name == "" { p.Name = "Python HTTP Server" }
+		},
+		"flask-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "flask" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "--debug"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeAPIServer }
+			if p.Port == 0 { p.Port = 5000 }
+			if p.Name == "" { p.Name = "Flask Development Server" }
+			if p.Environment == nil { p.Environment = make(map[string]string) }
+			if p.Environment["FLASK_ENV"] == "" { p.Environment["FLASK_ENV"] = "development" }
+		},
+		"django-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "python" }
+			if len(p.Args) == 0 { p.Args = []string{"manage.py", "runserver"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWebServer }
+			if p.Port == 0 { p.Port = 8000 }
+			if p.Name == "" { p.Name = "Django Development Server" }
+		},
+		"go-server": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "go" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "main.go"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeAPIServer }
+			if p.Port == 0 { p.Port = 8080 }
+			if p.Name == "" { p.Name = "Go Server" }
+		},
+		"webpack-dev": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npx" }
+			if len(p.Args) == 0 { p.Args = []string{"webpack", "serve", "--mode", "development"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeBuildTool }
+			if p.Port == 0 { p.Port = 8080 }
+			if p.Name == "" { p.Name = "Webpack Dev Server" }
+		},
+		"tailwind-watch": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npx" }
+			if len(p.Args) == 0 { p.Args = []string{"tailwindcss", "-i", "./src/input.css", "-o", "./dist/output.css", "--watch"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeWatcher }
+			if p.Name == "" { p.Name = "Tailwind CSS Watcher" }
+		},
+		"postgres": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "postgres" }
+			if p.Type == "" { p.Type = domain.ProcessTypeDatabase }
+			if p.Port == 0 { p.Port = 5432 }
+			if p.Name == "" { p.Name = "PostgreSQL Database" }
+		},
+		"redis": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "redis-server" }
+			if p.Type == "" { p.Type = domain.ProcessTypeDatabase }
+			if p.Port == 0 { p.Port = 6379 }
+			if p.Name == "" { p.Name = "Redis Server" }
+		},
+		"mysql": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "mysqld" }
+			if p.Type == "" { p.Type = domain.ProcessTypeDatabase }
+			if p.Port == 0 { p.Port = 3306 }
+			if p.Name == "" { p.Name = "MySQL Database" }
+		},
+		"jest-watch": func(p *CreateProcessParams) {
+			if p.Command == "" { p.Command = "npm" }
+			if len(p.Args) == 0 { p.Args = []string{"run", "test:watch"} }
+			if p.Type == "" { p.Type = domain.ProcessTypeTest }
+			if p.Name == "" { p.Name = "Jest Test Watcher" }
+		},
+	}
+	
+	template, exists := templates[params.Template]
+	if !exists {
+		availableTemplates := make([]string, 0, len(templates))
+		for name := range templates {
+			availableTemplates = append(availableTemplates, name)
+		}
+		return fmt.Errorf("unknown template '%s'. Available templates: %v", params.Template, availableTemplates)
+	}
+	
+	template(params)
+	return nil
 }
 
 type ProcessIDParams struct {
@@ -931,6 +1091,96 @@ type CreateTodoContext struct {
 type CreateTodoCriteria struct {
 	Acceptance   []string `json:"acceptance"`
 	Verification []string `json:"verification,omitempty"`
+}
+
+type QuickTodoParams struct {
+	ProjectID   string      `json:"projectId,omitempty"`
+	Title       string      `json:"title"`
+	Description string      `json:"description,omitempty"`
+	Priority    string      `json:"priority,omitempty"`
+	DueDate     *time.Time  `json:"dueDate,omitempty"`
+	Labels      []string    `json:"labels,omitempty"`
+	AssignedTo  string      `json:"assignedTo,omitempty"`
+}
+
+func (s *MCPServer) handleTodoQuickCreate(params json.RawMessage) (interface{}, error) {
+	var p QuickTodoParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
+	
+	// Validate required parameters
+	if p.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+	
+	// Use current project if not specified
+	projectID := p.ProjectID
+	if projectID == "" {
+		current, err := s.projectService.GetCurrent()
+		if err != nil {
+			return nil, fmt.Errorf("no current project set and no projectId provided")
+		}
+		projectID = current.ID
+	}
+	
+	// Set default priority if not specified
+	var priority domain.Priority
+	if p.Priority == "" {
+		priority = domain.PriorityMedium
+	} else {
+		priority = domain.Priority(p.Priority)
+	}
+	
+	// Set default description if not provided
+	description := p.Description
+	if description == "" {
+		description = "Quick todo item - details to be added later"
+	}
+	
+	// Helper for optional string pointer
+	var assignedTo *string
+	if p.AssignedTo != "" {
+		assignedTo = &p.AssignedTo
+	}
+	
+	// Create minimal 3 C's structure
+	card := &CreateTodoCard{
+		Title:          p.Title,
+		Description:    description,
+		Priority:       priority,
+		DueDate:        p.DueDate,
+		Labels:         p.Labels,
+		AssignedTo:     assignedTo,
+		EstimatedHours: nil, // Default to nil for quick todos
+	}
+	
+	context := &CreateTodoContext{
+		Files:        []string{}, // Empty files for quick todos
+		Dependencies: []string{}, // Empty dependencies for quick todos
+		Assumptions:  []string{"This is a quick todo - assumptions to be refined as needed"}, // Default assumption
+	}
+	
+	criteria := &CreateTodoCriteria{
+		Acceptance:   []string{"Task completed as described in title", "Implementation meets basic requirements"}, // Default acceptance criteria
+		Verification: []string{"Manual verification of completion"}, // Default verification
+	}
+	
+	// Create the task using the existing create logic
+	fullParams := CreateTodoParams{
+		ProjectID: projectID,
+		Card:      card,
+		Context:   context,
+		Criteria:  criteria,
+	}
+	
+	// Convert back to JSON and call the full create handler
+	fullParamsJSON, err := json.Marshal(fullParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert quick todo to full structure: %w", err)
+	}
+	
+	return s.handleTodoCreate(fullParamsJSON)
 }
 
 func (s *MCPServer) handleTodoCreate(params json.RawMessage) (interface{}, error) {
