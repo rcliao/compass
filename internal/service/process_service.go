@@ -600,6 +600,7 @@ func (ps *ProcessService) captureOutput(processID string, pipe io.Reader, logTyp
 	lineCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
+		// Removed verbose line-by-line logging for cleaner output
 		ps.addLog(processID, logType, line)
 		lineCount++
 		
@@ -623,14 +624,23 @@ func (ps *ProcessService) captureOutput(processID string, pipe io.Reader, logTyp
 
 // addLog adds a log entry (thread-safe - acquires ps.mu lock)
 func (ps *ProcessService) addLog(processID string, logType domain.LogType, message string) {
+	// Create log entry
+	logEntry := domain.NewProcessLog(processID, logType, message)
+	
+	// Save directly to storage to handle CLI mode where buffers may not persist
+	if err := ps.storage.SaveProcessLogs([]*domain.ProcessLog{logEntry}); err != nil {
+		log.Printf("ProcessService: Failed to save log for process %s: %v", processID[:8], err)
+	}
+	
+	// Also try to add to buffer if it exists (for in-memory access)
 	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	buffer, exists := ps.logBuffers[processID]
 	if exists {
-		ps.addLogUnsafe(buffer, processID, logType, message)
-	} else {
-		log.Printf("ProcessService: Warning - no log buffer found for process %s, log dropped: %s", processID[:8], message)
+		buffer.mu.Lock()
+		buffer.logs = append(buffer.logs, logEntry)
+		buffer.mu.Unlock()
 	}
-	ps.mu.Unlock()
 }
 
 // addLogUnsafe adds a log entry without acquiring ps.mu (for use within methods that already hold the lock)
@@ -643,17 +653,13 @@ func (ps *ProcessService) addLogUnsafe(buffer *LogBuffer, processID string, logT
 	buffer.logs = append(buffer.logs, logEntry)
 	
 	// Save logs to storage immediately for persistence across instances
-	// Save in batches of 10 to reduce I/O
-	if len(buffer.logs)%10 == 0 || len(buffer.logs) == 1 {
-		// Save the last 10 logs (or all if less than 10)
-		start := len(buffer.logs) - 10
-		if start < 0 {
-			start = 0
-		}
-		toSave := buffer.logs[start:]
-		if err := buffer.storage.SaveProcessLogs(toSave); err != nil {
-			log.Printf("ProcessService: Failed to save logs for process %s: %v", processID[:8], err)
-		}
+	// Save each log entry immediately to ensure CLI mode compatibility
+	toSave := []*domain.ProcessLog{logEntry}
+	log.Printf("ProcessService: Saving 1 log to storage for process %s: %s", processID[:8], logEntry.Message)
+	if err := buffer.storage.SaveProcessLogs(toSave); err != nil {
+		log.Printf("ProcessService: Failed to save log for process %s: %v", processID[:8], err)
+	} else {
+		log.Printf("ProcessService: Successfully saved log for process %s", processID[:8])
 	}
 	
 	// Rotate if needed
