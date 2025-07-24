@@ -29,6 +29,12 @@ type ProcessStorage interface {
 	GetProcessLogs(processID string, limit int) ([]*domain.ProcessLog, error)
 }
 
+// PortCacheEntry represents a cached port availability check
+type PortCacheEntry struct {
+	Available bool
+	Timestamp time.Time
+}
+
 // ProcessService manages process lifecycle and operations
 type ProcessService struct {
 	storage           ProcessStorage
@@ -38,6 +44,8 @@ type ProcessService struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	defaultWorkingDir string // Directory where MCP server was started (user's project dir)
+	portCache         map[int]*PortCacheEntry
+	portCacheMu       sync.RWMutex
 }
 
 // ProcessInfo wraps a process with its command and channels
@@ -66,10 +74,14 @@ func NewProcessService(storage ProcessStorage, defaultWorkingDir string) *Proces
 		ctx:               ctx,
 		cancel:            cancel,
 		defaultWorkingDir: defaultWorkingDir,
+		portCache:         make(map[int]*PortCacheEntry),
 	}
 	
 	// Start health check routine
 	go ps.healthCheckLoop()
+	
+	// Start port cache cleanup routine
+	go ps.portCacheCleanupLoop()
 	
 	// Load existing processes from storage
 	ps.loadProcesses()
@@ -199,6 +211,9 @@ func (ps *ProcessService) Start(processID string) error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 	
+	// Set stdin to /dev/null to prevent process from waiting for input
+	cmd.Stdin = nil
+	
 	// Update process status
 	process.Status = domain.ProcessStatusStarting
 	now := time.Now()
@@ -220,6 +235,8 @@ func (ps *ProcessService) Start(processID string) error {
 	process.Status = domain.ProcessStatusRunning
 	ps.storage.SaveProcess(process.ProjectID, process)
 	
+	log.Printf("ProcessService: Process %s started with PID %d", processID[:8], process.PID)
+	
 	// Create process info
 	done := make(chan error, 1)
 	info := &ProcessInfo{
@@ -230,9 +247,12 @@ func (ps *ProcessService) Start(processID string) error {
 	}
 	ps.processes[processID] = info
 	
-	// Start log capture routines
+	// Start log capture routines BEFORE any output can be generated
 	go ps.captureOutput(processID, stdout, domain.LogTypeStdout)
 	go ps.captureOutput(processID, stderr, domain.LogTypeStderr)
+	
+	// Give capture routines a moment to start
+	time.Sleep(10 * time.Millisecond)
 	
 	// Monitor process completion
 	go func() {
@@ -273,6 +293,19 @@ func (ps *ProcessService) Start(processID string) error {
 		
 		ps.storage.SaveProcess(process.ProjectID, process)
 		delete(ps.processes, processID)
+		
+		// Log process completion
+		if buffer := ps.logBuffers[processID]; buffer != nil {
+			ps.addLogUnsafe(buffer, processID, domain.LogTypeSystem, 
+				fmt.Sprintf("Process exited with status: %s", process.Status))
+			
+			// Save any remaining logs to storage before cleanup
+			buffer.mu.Lock()
+			if len(buffer.logs) > 0 {
+				ps.storage.SaveProcessLogs(buffer.logs)
+			}
+			buffer.mu.Unlock()
+		}
 		
 		// Handle restart policy
 		if process.RestartPolicy.Enabled && process.Status == domain.ProcessStatusCrashed {
@@ -337,14 +370,33 @@ func (ps *ProcessService) Stop(processID string) error {
 	if info.Cmd.Process != nil {
 		// Send SIGTERM
 		if err := info.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			log.Printf("ProcessService: SIGTERM failed for process %s: %v, trying SIGKILL", processID[:8], err)
 			// If SIGTERM fails, try SIGKILL
 			if err := info.Cmd.Process.Kill(); err != nil {
 				return fmt.Errorf("failed to stop process: %w", err)
 			}
+		} else {
+			// Give process time to handle SIGTERM gracefully (up to 5 seconds)
+			gracefulShutdown := make(chan bool, 1)
+			go func() {
+				select {
+				case <-info.Done:
+					gracefulShutdown <- true
+				case <-time.After(5 * time.Second):
+					gracefulShutdown <- false
+				}
+			}()
+			
+			if !<-gracefulShutdown {
+				log.Printf("ProcessService: Process %s didn't stop gracefully, sending SIGKILL", processID[:8])
+				if err := info.Cmd.Process.Kill(); err != nil {
+					log.Printf("ProcessService: Failed to kill process %s: %v", processID[:8], err)
+				}
+			}
 		}
 	}
 	
-	// Cancel context
+	// Cancel context to ensure all goroutines exit
 	info.Cancel()
 	
 	// Log stop event
@@ -534,17 +586,39 @@ func (ps *ProcessService) captureOutput(processID string, pipe io.Reader, logTyp
 		if r := recover(); r != nil {
 			log.Printf("ProcessService: Panic in captureOutput for process %s: %v", processID[:8], r)
 		}
+		// Log when capture routine exits
+		log.Printf("ProcessService: Exiting %s capture for process %s", logType, processID[:8])
 	}()
 	
+	log.Printf("ProcessService: Starting %s capture for process %s", logType, processID[:8])
+	
+	// Create scanner with larger buffer for long lines
 	scanner := bufio.NewScanner(pipe)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max line length
+	
+	lineCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		ps.addLog(processID, logType, line)
+		lineCount++
+		
+		// Periodic debug logging for active processes
+		if lineCount%100 == 0 {
+			log.Printf("ProcessService: Captured %d lines from %s for process %s", lineCount, logType, processID[:8])
+		}
 	}
 	
+	// Check for scanner errors
 	if err := scanner.Err(); err != nil {
-		log.Printf("ProcessService: Error reading %s for process %s: %v", logType, processID[:8], err)
+		// Don't log EOF as error - it's normal when process exits
+		if err != io.EOF {
+			log.Printf("ProcessService: Error reading %s for process %s: %v", logType, processID[:8], err)
+			ps.addLog(processID, domain.LogTypeSystem, fmt.Sprintf("Error reading %s: %v", logType, err))
+		}
 	}
+	
+	log.Printf("ProcessService: Captured total %d lines from %s for process %s", lineCount, logType, processID[:8])
 }
 
 // addLog adds a log entry (thread-safe - acquires ps.mu lock)
@@ -553,18 +627,34 @@ func (ps *ProcessService) addLog(processID string, logType domain.LogType, messa
 	buffer, exists := ps.logBuffers[processID]
 	if exists {
 		ps.addLogUnsafe(buffer, processID, logType, message)
+	} else {
+		log.Printf("ProcessService: Warning - no log buffer found for process %s, log dropped: %s", processID[:8], message)
 	}
 	ps.mu.Unlock()
 }
 
 // addLogUnsafe adds a log entry without acquiring ps.mu (for use within methods that already hold the lock)
 func (ps *ProcessService) addLogUnsafe(buffer *LogBuffer, processID string, logType domain.LogType, message string) {
-	log := domain.NewProcessLog(processID, logType, message)
+	logEntry := domain.NewProcessLog(processID, logType, message)
 	
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
 	
-	buffer.logs = append(buffer.logs, log)
+	buffer.logs = append(buffer.logs, logEntry)
+	
+	// Save logs to storage immediately for persistence across instances
+	// Save in batches of 10 to reduce I/O
+	if len(buffer.logs)%10 == 0 || len(buffer.logs) == 1 {
+		// Save the last 10 logs (or all if less than 10)
+		start := len(buffer.logs) - 10
+		if start < 0 {
+			start = 0
+		}
+		toSave := buffer.logs[start:]
+		if err := buffer.storage.SaveProcessLogs(toSave); err != nil {
+			log.Printf("ProcessService: Failed to save logs for process %s: %v", processID[:8], err)
+		}
+	}
 	
 	// Rotate if needed
 	if len(buffer.logs) > buffer.maxSize {
@@ -596,6 +686,42 @@ func (ps *ProcessService) healthCheckLoop() {
 			ps.checkHealth()
 		case <-ps.ctx.Done():
 			return
+		}
+	}
+}
+
+// portCacheCleanupLoop periodically cleans up expired port cache entries
+func (ps *ProcessService) portCacheCleanupLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ProcessService: Panic in portCacheCleanupLoop: %v", r)
+			// Restart the cleanup loop after a panic
+			go ps.portCacheCleanupLoop()
+		}
+	}()
+	
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			ps.cleanupPortCache()
+		case <-ps.ctx.Done():
+			return
+		}
+	}
+}
+
+// cleanupPortCache removes expired entries from the port cache
+func (ps *ProcessService) cleanupPortCache() {
+	ps.portCacheMu.Lock()
+	defer ps.portCacheMu.Unlock()
+	
+	now := time.Now()
+	for port, entry := range ps.portCache {
+		if now.Sub(entry.Timestamp) > 5*time.Minute { // Remove entries older than 5 minutes
+			delete(ps.portCache, port)
 		}
 	}
 }
@@ -757,9 +883,27 @@ func (ps *ProcessService) isCommandExecutable(command, workingDir string) bool {
 		return info.Mode()&0111 != 0
 	}
 	
-	// Check if command exists in PATH
-	_, err := exec.LookPath(command)
-	return err == nil
+	// Check if command exists in PATH with timeout
+	return ps.isCommandInPathWithTimeout(command, 10*time.Second)
+}
+
+func (ps *ProcessService) isCommandInPathWithTimeout(command string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	done := make(chan bool, 1)
+	go func() {
+		_, err := exec.LookPath(command)
+		done <- err == nil
+	}()
+	
+	select {
+	case result := <-done:
+		return result
+	case <-ctx.Done():
+		log.Printf("[DEBUG] Command PATH lookup timed out: %s", command)
+		return false // Assume command not found on timeout
+	}
 }
 
 // validateEnvironmentVariables validates environment variable names and values
@@ -883,18 +1027,58 @@ func (ps *ProcessService) checkPortAvailableUnlocked(port int) error {
 func (ps *ProcessService) isPortAvailable(port int) bool {
 	log.Printf("[DEBUG] Checking port availability: %d", port)
 	
-	// Try to bind to localhost specifically (not all interfaces)
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
-	if err != nil {
-		log.Printf("[DEBUG] Port %d is in use (bind failed: %v)", port, err)
-		// If bind fails, port is in use
-		return false
+	// Check cache first (30 second TTL)
+	ps.portCacheMu.RLock()
+	if entry, exists := ps.portCache[port]; exists {
+		if time.Since(entry.Timestamp) < 30*time.Second {
+			ps.portCacheMu.RUnlock()
+			log.Printf("[DEBUG] Port %d availability from cache: %v", port, entry.Available)
+			return entry.Available
+		}
 	}
+	ps.portCacheMu.RUnlock()
 	
-	// Port is available, close the listener immediately
-	listener.Close()
-	log.Printf("[DEBUG] Port %d is available", port)
-	return true
+	// Check port availability with timeout
+	available := ps.checkPortWithTimeout(port, 3*time.Second)
+	
+	// Update cache
+	ps.portCacheMu.Lock()
+	ps.portCache[port] = &PortCacheEntry{
+		Available: available,
+		Timestamp: time.Now(),
+	}
+	ps.portCacheMu.Unlock()
+	
+	log.Printf("[DEBUG] Port %d is available: %v", port, available)
+	return available
+}
+
+func (ps *ProcessService) checkPortWithTimeout(port int, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	done := make(chan bool, 1)
+	go func() {
+		// Try to bind to localhost specifically (not all interfaces)
+		listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+		if err != nil {
+			log.Printf("[DEBUG] Port %d is in use (bind failed: %v)", port, err)
+			done <- false
+			return
+		}
+		
+		// Port is available, close the listener immediately
+		listener.Close()
+		done <- true
+	}()
+	
+	select {
+	case available := <-done:
+		return available
+	case <-ctx.Done():
+		log.Printf("[DEBUG] Port %d availability check timed out", port)
+		return false // Assume port is unavailable on timeout
+	}
 }
 
 // suggestAlternativePorts suggests alternative ports when there's a conflict
