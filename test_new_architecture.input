@@ -1,0 +1,3 @@
+compass.process.create {"name": "Test Echo", "command": "echo", "args": ["Hello from new architecture!"]}
+compass.process.list {}
+quit

@@ -4,25 +4,66 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rcliao/compass/internal/domain"
 	"github.com/rcliao/compass/internal/search"
 )
 
+// TaskCacheEntry represents cached task data
+type TaskCacheEntry struct {
+	Tasks     []*domain.Task
+	Timestamp time.Time
+	ProjectID string
+}
+
 type ContextRetriever struct {
 	taskStorage    TaskStorage
 	projectStorage ProjectStorage
 	searcher       *search.HybridSearch
 	headerGen      *HeaderGenerator
+	taskCache      map[string]*TaskCacheEntry
+	cacheMu        sync.RWMutex
+	cacheTTL       time.Duration
 }
 
 func NewContextRetriever(taskStorage TaskStorage, projectStorage ProjectStorage) *ContextRetriever {
-	return &ContextRetriever{
+	cr := &ContextRetriever{
 		taskStorage:    taskStorage,
 		projectStorage: projectStorage,
 		searcher:       search.NewHybridSearch(taskStorage),
 		headerGen:      NewHeaderGenerator(200),
+		taskCache:      make(map[string]*TaskCacheEntry),
+		cacheTTL:       5 * time.Minute, // 5 minute cache TTL
+	}
+	
+	// Start cache cleanup routine
+	go cr.cacheCleanupLoop()
+	
+	return cr
+}
+
+// cacheCleanupLoop periodically cleans up expired cache entries
+func (cr *ContextRetriever) cacheCleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		cr.cleanupExpiredCache()
+	}
+}
+
+// cleanupExpiredCache removes expired entries from the task cache
+func (cr *ContextRetriever) cleanupExpiredCache() {
+	cr.cacheMu.Lock()
+	defer cr.cacheMu.Unlock()
+	
+	now := time.Now()
+	for projectID, entry := range cr.taskCache {
+		if now.Sub(entry.Timestamp) > cr.cacheTTL {
+			delete(cr.taskCache, projectID)
+		}
 	}
 }
 
@@ -81,13 +122,50 @@ func (cr *ContextRetriever) Search(query string, opts domain.SearchOptions) ([]*
 	return cr.searcher.Search(query, opts)
 }
 
-func (cr *ContextRetriever) GetNextTask(criteria domain.NextTaskCriteria) (*domain.Task, error) {
-	// Get all tasks for the project
+// getCachedTasks retrieves tasks for a project with caching to reduce file I/O
+func (cr *ContextRetriever) getCachedTasks(projectID string) ([]*domain.Task, error) {
+	// Check cache first
+	cr.cacheMu.RLock()
+	if entry, exists := cr.taskCache[projectID]; exists {
+		if time.Since(entry.Timestamp) < cr.cacheTTL {
+			cr.cacheMu.RUnlock()
+			return entry.Tasks, nil
+		}
+	}
+	cr.cacheMu.RUnlock()
+	
+	// Cache miss or expired, load from storage
 	filter := domain.TaskFilter{
-		ProjectID: &criteria.ProjectID,
+		ProjectID: &projectID,
 	}
 	
 	tasks, err := cr.taskStorage.ListTasks(filter)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Update cache
+	cr.cacheMu.Lock()
+	cr.taskCache[projectID] = &TaskCacheEntry{
+		Tasks:     tasks,
+		Timestamp: time.Now(),
+		ProjectID: projectID,
+	}
+	cr.cacheMu.Unlock()
+	
+	return tasks, nil
+}
+
+// InvalidateTaskCache invalidates the task cache for a project (call when tasks are modified)
+func (cr *ContextRetriever) InvalidateTaskCache(projectID string) {
+	cr.cacheMu.Lock()
+	delete(cr.taskCache, projectID)
+	cr.cacheMu.Unlock()
+}
+
+func (cr *ContextRetriever) GetNextTask(criteria domain.NextTaskCriteria) (*domain.Task, error) {
+	// Get all tasks for the project (with caching)
+	tasks, err := cr.getCachedTasks(criteria.ProjectID)
 	if err != nil {
 		return nil, err
 	}

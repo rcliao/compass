@@ -45,10 +45,19 @@ func runMCPTransport() {
 	contextRetriever := service.NewContextRetriever(fileStorage, fileStorage)
 	planningService := service.NewPlanningService(fileStorage, taskService, projectService)
 	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
-	processService := service.NewProcessService(fileStorage, cwd)
+	
+	// Initialize new process orchestrator
+	orchestratorConfig := service.DefaultProcessOrchestratorConfig()
+	orchestratorConfig.DefaultWorkingDir = cwd
+	processOrchestrator := service.NewProcessOrchestrator(fileStorage, orchestratorConfig)
+	
+	// Start the orchestrator
+	if err := processOrchestrator.Initialize(); err != nil {
+		log.Fatal("Failed to start process orchestrator:", err)
+	}
 
 	// Initialize MCP server
-	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
+	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processOrchestrator)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -89,10 +98,19 @@ func runCLI() {
 	contextRetriever := service.NewContextRetriever(fileStorage, fileStorage)
 	planningService := service.NewPlanningService(fileStorage, taskService, projectService)
 	summaryService := service.NewProjectSummaryService(taskService, projectService, planningService)
-	processService := service.NewProcessService(fileStorage, cwd)
+	
+	// Initialize new process orchestrator
+	orchestratorConfig := service.DefaultProcessOrchestratorConfig()
+	orchestratorConfig.DefaultWorkingDir = cwd
+	processOrchestrator := service.NewProcessOrchestrator(fileStorage, orchestratorConfig)
+	
+	// Start the orchestrator
+	if err := processOrchestrator.Initialize(); err != nil {
+		log.Fatal("Failed to start process orchestrator:", err)
+	}
 
 	// Initialize MCP server
-	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processService)
+	mcpServer := mcp.NewMCPServer(taskService, projectService, contextRetriever, planningService, summaryService, processOrchestrator)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

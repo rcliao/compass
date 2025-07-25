@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,22 +14,22 @@ import (
 )
 
 type MCPServer struct {
-	taskService       *service.TaskService
-	projectService    *service.ProjectService
-	contextRetriever  *service.ContextRetriever
-	planningService   *service.PlanningService
-	summaryService    *service.ProjectSummaryService
-	processService    *service.ProcessService
+	taskService         *service.TaskService
+	projectService      *service.ProjectService
+	contextRetriever    *service.ContextRetriever
+	planningService     *service.PlanningService
+	summaryService      *service.ProjectSummaryService
+	processOrchestrator *service.ProcessOrchestrator
 }
 
-func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever, planningService *service.PlanningService, summaryService *service.ProjectSummaryService, processService *service.ProcessService) *MCPServer {
+func NewMCPServer(taskService *service.TaskService, projectService *service.ProjectService, contextRetriever *service.ContextRetriever, planningService *service.PlanningService, summaryService *service.ProjectSummaryService, processOrchestrator *service.ProcessOrchestrator) *MCPServer {
 	return &MCPServer{
-		taskService:      taskService,
-		projectService:   projectService,
-		contextRetriever: contextRetriever,
-		planningService:  planningService,
-		summaryService:   summaryService,
-		processService:   processService,
+		taskService:         taskService,
+		projectService:      projectService,
+		contextRetriever:    contextRetriever,
+		planningService:     planningService,
+		summaryService:      summaryService,
+		processOrchestrator: processOrchestrator,
 	}
 }
 
@@ -744,7 +745,7 @@ func (s *MCPServer) handleProcessCreate(params json.RawMessage) (interface{}, er
 		process.Port = p.Port
 	}
 	
-	if err := s.processService.Create(process); err != nil {
+	if err := s.processOrchestrator.Create(process); err != nil {
 		return nil, err
 	}
 	
@@ -881,7 +882,7 @@ func (s *MCPServer) handleProcessStart(params json.RawMessage) (interface{}, err
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	if err := s.processService.Start(p.ID); err != nil {
+	if err := s.processOrchestrator.Start(p.ID); err != nil {
 		return nil, err
 	}
 	
@@ -894,7 +895,7 @@ func (s *MCPServer) handleProcessStop(params json.RawMessage) (interface{}, erro
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	if err := s.processService.Stop(p.ID); err != nil {
+	if err := s.processOrchestrator.Stop(p.ID); err != nil {
 		return nil, err
 	}
 	
@@ -930,7 +931,7 @@ func (s *MCPServer) handleProcessList(params json.RawMessage) (interface{}, erro
 		Type:      p.Type,
 	}
 	
-	processes, err := s.processService.List(filter)
+	processes, err := s.processOrchestrator.List(filter)
 	if err != nil {
 		return nil, err
 	}
@@ -945,7 +946,7 @@ func (s *MCPServer) handleProcessGet(params json.RawMessage) (interface{}, error
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	return s.processService.Get(p.ID)
+	return s.processOrchestrator.Get(p.ID)
 }
 
 type ProcessLogsParams struct {
@@ -963,7 +964,7 @@ func (s *MCPServer) handleProcessLogs(params json.RawMessage) (interface{}, erro
 		p.Limit = 100
 	}
 	
-	logs, err := s.processService.GetLogs(p.ID, p.Limit)
+	logs, err := s.processOrchestrator.GetLogs(p.ID, p.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -978,7 +979,7 @@ func (s *MCPServer) handleProcessStatus(params json.RawMessage) (interface{}, er
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	process, err := s.processService.Get(p.ID)
+	process, err := s.processOrchestrator.Get(p.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -998,7 +999,7 @@ func (s *MCPServer) handleProcessUpdate(params json.RawMessage) (interface{}, er
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	return s.processService.Update(p.ID, p.Updates)
+	return s.processOrchestrator.Update(p.ID, p.Updates)
 }
 
 type CreateProcessGroupParams struct {
@@ -1029,7 +1030,7 @@ func (s *MCPServer) handleProcessGroupCreate(params json.RawMessage) (interface{
 		group.ProcessIDs = p.ProcessIDs
 	}
 	
-	if err := s.processService.CreateGroup(group); err != nil {
+	if err := s.processOrchestrator.CreateGroup(group); err != nil {
 		return nil, err
 	}
 	
@@ -1046,7 +1047,7 @@ func (s *MCPServer) handleProcessGroupStart(params json.RawMessage) (interface{}
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	if err := s.processService.StartGroup(p.ID); err != nil {
+	if err := s.processOrchestrator.StartGroup(p.ID); err != nil {
 		return nil, err
 	}
 	
@@ -1059,7 +1060,7 @@ func (s *MCPServer) handleProcessGroupStop(params json.RawMessage) (interface{},
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 	
-	if err := s.processService.StopGroup(p.ID); err != nil {
+	if err := s.processOrchestrator.StopGroup(p.ID); err != nil {
 		return nil, err
 	}
 	
@@ -1316,8 +1317,11 @@ func (s *MCPServer) handleTodoComplete(params json.RawMessage) (interface{}, err
 
 // Helper methods for audit trail capture
 func (s *MCPServer) getCurrentCommitHash() string {
-	// Try to get current git commit hash
-	if output, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+	// Try to get current git commit hash with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	
+	if output, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
 		return strings.TrimSpace(string(output))
 	}
 	return ""
@@ -1327,8 +1331,12 @@ func (s *MCPServer) getCurrentWorkingFiles() []string {
 	// Get list of modified/staged files in current directory
 	var files []string
 	
+	// Use timeout for git commands
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	
 	// Get modified files
-	if output, err := exec.Command("git", "diff", "--name-only").Output(); err == nil {
+	if output, err := exec.CommandContext(ctx, "git", "diff", "--name-only").Output(); err == nil {
 		for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 			if file != "" {
 				files = append(files, file)
@@ -1337,7 +1345,7 @@ func (s *MCPServer) getCurrentWorkingFiles() []string {
 	}
 	
 	// Get staged files
-	if output, err := exec.Command("git", "diff", "--cached", "--name-only").Output(); err == nil {
+	if output, err := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-only").Output(); err == nil {
 		for _, file := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 			if file != "" {
 				// Avoid duplicates
@@ -1583,11 +1591,11 @@ func (s *MCPServer) handleTodoUpdateProgress(params json.RawMessage) (interface{
 // Shutdown gracefully shuts down the MCP server and all managed processes
 func (s *MCPServer) Shutdown() {
 	log.Printf("MCPServer: Shutdown called")
-	if s.processService != nil {
-		log.Printf("MCPServer: Calling processService.Shutdown()")
-		s.processService.Shutdown()
-		log.Printf("MCPServer: processService.Shutdown() completed")
+	if s.processOrchestrator != nil {
+		log.Printf("MCPServer: Calling processOrchestrator.Shutdown()")
+		s.processOrchestrator.Shutdown()
+		log.Printf("MCPServer: processOrchestrator.Shutdown() completed")
 	} else {
-		log.Printf("MCPServer: processService is nil!")
+		log.Printf("MCPServer: processOrchestrator is nil!")
 	}
 }

@@ -352,8 +352,8 @@ func (t *MCPTransport) handleCompassMethod(req JSONRPCRequest) *JSONRPCResponse 
 		return t.handlePromptGet(req)
 	}
 
-	// Direct method calls (legacy compatibility)
-	result, err := t.server.HandleCommand(req.Method, req.Params)
+	// Direct method calls (legacy compatibility) with timeout
+	result, err := t.handleCommandWithTimeout(req.Method, req.Params, 30*time.Second)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -835,9 +835,9 @@ func (t *MCPTransport) handleToolCall(req JSONRPCRequest) *JSONRPCResponse {
 		}
 	}
 
-	// Call the Compass method
+	// Call the Compass method with timeout
 	t.addDebugLog(fmt.Sprintf("Executing command: %s", commandName))
-	result, err := t.server.HandleCommand(commandName, argsJSON)
+	result, err := t.handleCommandWithTimeout(commandName, argsJSON, 30*time.Second)
 	if err != nil {
 		t.addDebugLog(fmt.Sprintf("Command %s failed: %v", commandName, err))
 		return &JSONRPCResponse{
@@ -1258,6 +1258,32 @@ func (t *MCPTransport) sendNotification(method string, params interface{}) error
 	}
 
 	return nil
+}
+
+// handleCommandWithTimeout executes a command with a timeout
+func (t *MCPTransport) handleCommandWithTimeout(method string, params json.RawMessage, timeout time.Duration) (interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	done := make(chan struct {
+		result interface{}
+		err    error
+	}, 1)
+	
+	go func() {
+		result, err := t.server.HandleCommand(method, params)
+		done <- struct {
+			result interface{}
+			err    error
+		}{result, err}
+	}()
+	
+	select {
+	case response := <-done:
+		return response.result, response.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("command timeout: %s (timeout: %v)", method, timeout)
+	}
 }
 
 // addDebugLog adds a debug log entry with timestamp

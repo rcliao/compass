@@ -1,18 +1,71 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/rcliao/compass/internal/domain"
 )
 
+// CircuitBreaker implements a simple circuit breaker pattern
+type CircuitBreaker struct {
+	failures    int
+	lastFailure time.Time
+	threshold   int
+	timeout     time.Duration
+	mu          sync.Mutex
+}
+
+// NewCircuitBreaker creates a new circuit breaker
+func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		threshold: threshold,
+		timeout:   timeout,
+	}
+}
+
+// Allow checks if the operation should be allowed
+func (cb *CircuitBreaker) Allow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	
+	// If we're within the timeout period after failures, check threshold
+	if time.Since(cb.lastFailure) < cb.timeout && cb.failures >= cb.threshold {
+		return false // Circuit is open
+	}
+	
+	// Reset failures if enough time has passed
+	if time.Since(cb.lastFailure) >= cb.timeout {
+		cb.failures = 0
+	}
+	
+	return true
+}
+
+// RecordSuccess resets the failure count
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures = 0
+}
+
+// RecordFailure increments the failure count
+func (cb *CircuitBreaker) RecordFailure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures++
+	cb.lastFailure = time.Now()
+}
+
 type FileStorage struct {
-	basePath string
-	mu       sync.RWMutex
+	basePath      string
+	mu            sync.RWMutex
+	circuitBreaker *CircuitBreaker
 }
 
 type Config struct {
@@ -21,7 +74,8 @@ type Config struct {
 
 func NewFileStorage(basePath string) (*FileStorage, error) {
 	fs := &FileStorage{
-		basePath: basePath,
+		basePath:       basePath,
+		circuitBreaker: NewCircuitBreaker(3, 30*time.Second), // Open circuit after 3 failures for 30 seconds
 	}
 	
 	err := fs.initialize()
@@ -60,49 +114,123 @@ func (fs *FileStorage) projectDir(projectID string) string {
 }
 
 func (fs *FileStorage) ensureProjectDir(projectID string) error {
-	dir := fs.projectDir(projectID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	
-	// Create subdirectories
-	subdirs := []string{"planning", "index"}
-	for _, subdir := range subdirs {
-		if err := os.MkdirAll(filepath.Join(dir, subdir), 0755); err != nil {
-			return err
+	done := make(chan error, 1)
+	go func() {
+		dir := fs.projectDir(projectID)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			done <- err
+			return
 		}
-	}
+		
+		// Create subdirectories
+		subdirs := []string{"planning", "index"}
+		for _, subdir := range subdirs {
+			if err := os.MkdirAll(filepath.Join(dir, subdir), 0755); err != nil {
+				done <- err
+				return
+			}
+		}
+		
+		done <- nil
+	}()
 	
-	return nil
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("directory creation timeout for project %s", projectID)
+	}
 }
 
 func (fs *FileStorage) saveJSON(path string, data interface{}) error {
-	tempPath := path + ".tmp"
-	
-	file, err := os.Create(tempPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(data); err != nil {
-		os.Remove(tempPath)
-		return err
+	return fs.saveJSONWithTimeout(path, data, 10*time.Second)
+}
+
+func (fs *FileStorage) saveJSONWithTimeout(path string, data interface{}, timeout time.Duration) error {
+	// Check circuit breaker
+	if !fs.circuitBreaker.Allow() {
+		return fmt.Errorf("file save circuit breaker open: %s", path)
 	}
 	
-	return os.Rename(tempPath, path)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	done := make(chan error, 1)
+	go func() {
+		tempPath := path + ".tmp"
+		
+		file, err := os.Create(tempPath)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer file.Close()
+		
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(data); err != nil {
+			os.Remove(tempPath)
+			done <- err
+			return
+		}
+		
+		done <- os.Rename(tempPath, path)
+	}()
+	
+	select {
+	case err := <-done:
+		if err != nil {
+			fs.circuitBreaker.RecordFailure()
+		} else {
+			fs.circuitBreaker.RecordSuccess()
+		}
+		return err
+	case <-ctx.Done():
+		fs.circuitBreaker.RecordFailure()
+		return fmt.Errorf("file save timeout: %s (timeout: %v)", path, timeout)
+	}
 }
 
 func (fs *FileStorage) loadJSON(path string, target interface{}) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
+	return fs.loadJSONWithTimeout(path, target, 5*time.Second)
+}
+
+func (fs *FileStorage) loadJSONWithTimeout(path string, target interface{}, timeout time.Duration) error {
+	// Check circuit breaker
+	if !fs.circuitBreaker.Allow() {
+		return fmt.Errorf("file operation circuit breaker open: %s", path)
 	}
-	defer file.Close()
 	
-	return json.NewDecoder(file).Decode(target)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	done := make(chan error, 1)
+	go func() {
+		file, err := os.Open(path)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer file.Close()
+		
+		done <- json.NewDecoder(file).Decode(target)
+	}()
+	
+	select {
+	case err := <-done:
+		if err != nil {
+			fs.circuitBreaker.RecordFailure()
+		} else {
+			fs.circuitBreaker.RecordSuccess()
+		}
+		return err
+	case <-ctx.Done():
+		fs.circuitBreaker.RecordFailure()
+		return fmt.Errorf("file operation timeout: %s (timeout: %v)", path, timeout)
+	}
 }
 
 // Task Repository Implementation
